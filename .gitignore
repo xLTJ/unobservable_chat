@@ -1,0 +1,12 @@
+# binaries
+/bin/
+
+# raw captures, dunno if they will be in here yet, but just so i dont forget
+*.pcap
+*.pcapng
+
+# large wordlists
+/wordlists/
+
+# editor stuff
+.idea/
