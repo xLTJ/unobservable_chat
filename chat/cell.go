@@ -20,7 +20,7 @@ const (
 	KindData
 	KindHandshake
 	KindHello
-	KindRelayOrder
+	KindRelayControl
 )
 
 type Frame struct {
@@ -31,7 +31,7 @@ type Frame struct {
 // Encode takes a Frame and encodes into a Cell
 func (f Frame) Encode() (Cell, error) {
 	// invalid kind = instant death
-	if f.Kind <= KindInvalid || f.Kind > KindRelayOrder {
+	if f.Kind <= KindInvalid || f.Kind > KindRelayControl {
 		return Cell{}, fmt.Errorf("invalid kind: %d", f.Kind)
 	}
 
@@ -48,7 +48,7 @@ func Decode(Cell Cell) (Frame, error) {
 	frame.Kind = Kind(Cell[0])
 
 	// invalid kind = (almost) instant death
-	if frame.Kind <= KindInvalid || frame.Kind > KindRelayOrder {
+	if frame.Kind <= KindInvalid || frame.Kind > KindRelayControl {
 		return Frame{}, fmt.Errorf("invalid kind: %d", frame.Kind)
 	}
 

@@ -1,0 +1,152 @@
+package main
+
+import (
+	"errors"
+	"io"
+	"log"
+	"net"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/xLTJ/unobservable_chat/chat"
+)
+
+type user struct {
+	conn          net.Conn
+	incomingCells chan chat.Cell
+}
+
+type room struct {
+	users      map[*user]bool
+	addUser    chan *user
+	removeUser chan *user
+	cells      chan chat.Cell
+}
+
+// startRoom runs the room's event loop. launch as a goroutine
+func (r *room) startRoom() {
+	for {
+		select {
+		case user := <-r.addUser:
+			r.users[user] = true
+			log.Println("user joined room")
+
+		case user := <-r.removeUser:
+			// if the user is not in the room (like if they were already removed), ignore
+			if _, ok := r.users[user]; !ok {
+				continue
+			}
+
+			_ = user.conn.Close()
+			delete(r.users, user)
+			log.Println("removed user from room")
+
+		case cell := <-r.cells:
+			for user := range r.users {
+				user.incomingCells <- cell
+			}
+			log.Println("sent cell to room")
+		}
+	}
+}
+
+func main() {
+	// do whatever here idk
+
+	// run relay, log any exit errors
+	err := run()
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
+	listener, err := net.Listen("tcp", chat.DefaultPort)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = listener.Close() }()
+
+	room := room{
+		users:      make(map[*user]bool),
+		addUser:    make(chan *user),
+		removeUser: make(chan *user),
+		cells:      make(chan chat.Cell),
+	}
+	go room.startRoom()
+
+	// launch accept loop
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				// if the listener is closed, return
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
+
+				// other accept errors are non-fatal, just log them
+				log.Println("Failed to accept connection: ", err)
+				continue
+			}
+
+			user := user{
+				conn:          conn,
+				incomingCells: make(chan chat.Cell, 8),
+			}
+			go handleUser(&user, &room)
+		}
+	}()
+
+	// creates channel to hold one signal
+	sigChan := make(chan os.Signal, 1)
+
+	// when a SIGINT or a SIGTERM signal is sent, send it to the sigChan channel.
+	// these signal are sent when the program terminates
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// wait for a signal to show up. when it does, it means the program should shut down, and so we close the listener.
+	<-sigChan
+	log.Println("Shutting down")
+	_ = listener.Close()
+
+	log.Println("Shutdown complete")
+	return nil
+}
+
+func handleUser(user *user, room *room) {
+	room.addUser <- user
+
+	go receiveCells(user, room)
+
+	sendCells(user, room)
+}
+
+// receiveCells reads cells from the user's connection and sends them to the room's cells channel
+func receiveCells(user *user, room *room) {
+	var buffer chat.Cell
+
+	for {
+		_, err := io.ReadFull(user.conn, buffer[:])
+		if err != nil {
+			log.Println("Failed to read from connection: ", err)
+			room.removeUser <- user
+			break
+		}
+
+		room.cells <- buffer
+	}
+}
+
+// sendCells reads from the user's incomingCells channel and sends them to the user's connection
+func sendCells(user *user, room *room) {
+	for cell := range user.incomingCells {
+		_, err := user.conn.Write(cell[:])
+		if err != nil {
+			log.Println("Failed to write to connection: ", err)
+			room.removeUser <- user
+			break
+		}
+	}
+}

@@ -1,5 +1,7 @@
 package chat
 
+import "time"
+
 const (
 	// RoomCap is how many people can be in a room. locked due to the fixed size of downstream cells.
 	// might be increased in the future
@@ -10,5 +12,8 @@ const (
 	CellSize = 480
 
 	// Tick is how often cells are transferred
-	Tick = 500
+	Tick = 500 * time.Millisecond
+
+	// DefaultPort is the default port for the relay. Arbitrary, can be whatever.
+	DefaultPort = "127.0.0.1:9735"
 )
