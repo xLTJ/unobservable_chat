@@ -15,8 +15,11 @@ type client struct {
 	name string
 }
 
+var name = flag.String("name", "Anonymous", "name to display")
+
 func main() {
 	// do whatever here idk
+	flag.Parse()
 
 	// run client, log any exit errors
 	err := run()
@@ -37,7 +40,7 @@ func run() error {
 	// create client
 	client := client{
 		conn: connection,
-		name: *flag.String("name", "Anonymous", "name to display"),
+		name: *name,
 	}
 
 	// launch read loop
