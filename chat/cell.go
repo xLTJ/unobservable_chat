@@ -43,15 +43,15 @@ func (f Frame) Encode() (Cell, error) {
 }
 
 // Decode takes a Cell and decodes into a Frame
-func Decode(Cell Cell) (Frame, error) {
+func Decode(c Cell) (Frame, error) {
 	var frame Frame
-	frame.Kind = Kind(Cell[0])
+	frame.Kind = Kind(c[0])
 
 	// invalid kind = (almost) instant death
 	if frame.Kind <= KindInvalid || frame.Kind > KindRelayControl {
 		return Frame{}, fmt.Errorf("invalid kind: %d", frame.Kind)
 	}
 
-	copy(frame.Body[:], Cell[1:])
+	copy(frame.Body[:], c[1:])
 	return frame, nil
 }
