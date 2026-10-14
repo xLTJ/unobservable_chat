@@ -14,14 +14,19 @@ import (
 
 type user struct {
 	conn          net.Conn
-	incomingCells chan chat.Cell
+	incomingCells chan userCell
+}
+
+type userCell struct {
+	user *user
+	cell chat.Cell
 }
 
 type room struct {
 	users      map[*user]bool
 	addUser    chan *user
 	removeUser chan *user
-	cells      chan chat.Cell
+	cells      chan userCell
 }
 
 // startRoom runs the room's event loop. launch as a goroutine
@@ -72,7 +77,7 @@ func run() error {
 		users:      make(map[*user]bool),
 		addUser:    make(chan *user),
 		removeUser: make(chan *user),
-		cells:      make(chan chat.Cell),
+		cells:      make(chan userCell),
 	}
 	go room.startRoom()
 
@@ -93,7 +98,7 @@ func run() error {
 
 			user := user{
 				conn:          conn,
-				incomingCells: make(chan chat.Cell, 8),
+				incomingCells: make(chan userCell, 8),
 			}
 			go handleUser(&user, &room)
 		}
@@ -131,14 +136,19 @@ func receiveCells(user *user, room *room) {
 			break
 		}
 
-		room.cells <- buffer
+		room.cells <- userCell{user: user, cell: buffer}
 	}
 }
 
 // sendCells reads from the user's incomingCells channel and sends them to the user's connection
 func sendCells(user *user, room *room) {
-	for cell := range user.incomingCells {
-		_, err := user.conn.Write(cell[:])
+	for incomingCell := range user.incomingCells {
+		// skip sending to the user who sent the cell
+		if incomingCell.user == user {
+			continue
+		}
+
+		_, err := user.conn.Write(incomingCell.cell[:])
 		if err != nil {
 			log.Println("Failed to write to connection: ", err)
 			room.removeUser <- user
