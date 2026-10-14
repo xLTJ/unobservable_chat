@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/xLTJ/unobservable_chat/chat"
@@ -49,6 +52,15 @@ func run() error {
 	// launch write loop. currently just creating automated debug messages
 	go client.send()
 
+	// wait for SIGINT or SIGTERM (basically, ctrl+c)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	<-ctx.Done()
+
+	log.Println("Shutting down...")
+	_ = connection.Close()
+
+	log.Println("Shutdown complete")
 	return nil
 }
 

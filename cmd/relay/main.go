@@ -1,11 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log"
 	"net"
-	"os"
 	"os/signal"
 	"syscall"
 
@@ -99,16 +99,12 @@ func run() error {
 		}
 	}()
 
-	// creates channel to hold one signal
-	sigChan := make(chan os.Signal, 1)
+	// wait for SIGINT or SIGTERM (basically, ctrl+c)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	<-ctx.Done()
 
-	// when a SIGINT or a SIGTERM signal is sent, send it to the sigChan channel.
-	// these signal are sent when the program terminates
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// wait for a signal to show up. when it does, it means the program should shut down, and so we close the listener.
-	<-sigChan
-	log.Println("Shutting down")
+	log.Println("Shutting down...")
 	_ = listener.Close()
 
 	log.Println("Shutdown complete")
