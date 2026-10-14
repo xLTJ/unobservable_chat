@@ -44,14 +44,24 @@ func (r *room) startRoom() {
 			}
 
 			_ = user.conn.Close()
+			close(user.incomingCells)
 			delete(r.users, user)
 			log.Println("removed user from room")
 
 		case cell := <-r.cells:
 			for user := range r.users {
-				user.incomingCells <- cell
+				// skip sending to the user who sent the cell
+				if user == cell.user {
+					continue
+				}
+
+				select {
+				case user.incomingCells <- cell:
+				default:
+					// if the user's incomingCells channel is full, drop the cell and log
+					log.Println("user's incomingCells channel is full, dropping cell")
+				}
 			}
-			log.Println("sent cell to room")
 		}
 	}
 }
@@ -143,11 +153,6 @@ func receiveCells(user *user, room *room) {
 // sendCells reads from the user's incomingCells channel and sends them to the user's connection
 func sendCells(user *user, room *room) {
 	for incomingCell := range user.incomingCells {
-		// skip sending to the user who sent the cell
-		if incomingCell.user == user {
-			continue
-		}
-
 		_, err := user.conn.Write(incomingCell.cell[:])
 		if err != nil {
 			log.Println("Failed to write to connection: ", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os/signal"
@@ -50,7 +51,12 @@ func run() error {
 	go client.receive()
 
 	// launch write loop. currently just creating automated debug messages
-	go client.send()
+	go func() {
+		err := client.send()
+		if err != nil {
+			log.Fatal(fmt.Errorf("failed to send messages: %v", err))
+		}
+	}()
 
 	// wait for SIGINT or SIGTERM (basically, ctrl+c)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -65,17 +71,20 @@ func run() error {
 }
 
 func (c *client) receive() {
-	buffer := chat.Cell{}
+	var buffer chat.Cell
 	for {
-		_, err := c.conn.Read(buffer[:])
+		_, err := io.ReadFull(c.conn, buffer[:])
 		if err != nil {
-			log.Fatalf("Failed to read from server: %v", err)
+			log.Println("Failed to read from server: ", err)
+			continue
 		}
 
 		// decode frame, then print it
 		frame, err := chat.Decode(buffer)
 		if err != nil {
-			log.Fatalf("Failed to decode frame: %v", err)
+			// drop invalid frames
+			log.Println("Failed to decode frame: ", err)
+			continue
 		}
 
 		var name string
