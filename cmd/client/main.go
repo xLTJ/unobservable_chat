@@ -1,14 +1,11 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/xLTJ/unobservable_chat/chat"
@@ -47,36 +44,23 @@ func run() error {
 		name: *name,
 	}
 
-	// launch read loop
-	go client.receive()
-
-	// launch write loop. currently just creating automated debug messages
+	// new and improved awesome error handling
+	errChan := make(chan error, 2)
 	go func() {
-		err := client.send()
-		if err != nil {
-			log.Fatal(fmt.Errorf("failed to send messages: %v", err))
-		}
+		errChan <- client.receive()
 	}()
-
-	// wait for SIGINT or SIGTERM (basically, ctrl+c)
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	<-ctx.Done()
-
-	log.Println("Shutting down...")
-	_ = connection.Close()
-
-	log.Println("Shutdown complete")
-	return nil
+	go func() {
+		errChan <- client.send()
+	}()
+	return <-errChan
 }
 
-func (c *client) receive() {
+func (c *client) receive() error {
 	var buffer chat.Cell
 	for {
 		_, err := io.ReadFull(c.conn, buffer[:])
 		if err != nil {
-			log.Println("Failed to read from server: ", err)
-			continue
+			return fmt.Errorf("failed to read from server: %v", err)
 		}
 
 		// decode frame, then print it
