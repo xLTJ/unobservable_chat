@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/xLTJ/unobservable_chat/chat"
+	"golang.org/x/net/proxy"
 )
 
 type client struct {
@@ -16,6 +17,8 @@ type client struct {
 }
 
 var name = flag.String("name", "Anonymous", "name to display")
+var relayHost = flag.String("relay", chat.DefaultRelayHost, "address of relay")
+var socksAddress = flag.String("socks", chat.DefaultSocksAddress, "address of socks proxy")
 
 func main() {
 	// do whatever here idk
@@ -29,12 +32,21 @@ func main() {
 }
 
 func run() error {
-	connection, err := net.Dial("tcp", chat.DefaultPort)
+	log.Println("connecting to relay...")
+	d, err := proxy.SOCKS5("tcp", *socksAddress,
+		nil, // no auth rn
+		proxy.Direct,
+	)
 	if err != nil {
-		return fmt.Errorf("failed to connect to server: %v", err)
+		return fmt.Errorf("failed to connect to socks proxy: %v", err)
+	}
+	log.Println("connected to socks proxy")
+
+	connection, err := d.Dial("tcp", fmt.Sprintf("%s:%s", *relayHost, chat.DefaultPort))
+	if err != nil {
+		return fmt.Errorf("failed to connect to relay: %v", err)
 	}
 	defer func() { _ = connection.Close() }()
-
 	fmt.Println("connected to relay")
 
 	// create client

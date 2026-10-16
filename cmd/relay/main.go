@@ -76,7 +76,7 @@ func main() {
 }
 
 func run() error {
-	listener, err := net.Listen("tcp", chat.DefaultPort)
+	listener, err := net.Listen("tcp", "127.0.0.1:"+chat.DefaultPort)
 	if err != nil {
 		return err
 	}
