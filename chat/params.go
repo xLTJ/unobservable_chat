@@ -8,8 +8,8 @@ const (
 	RoomCap = 8
 
 	// CellSize is the total fixed length of a cell.
-	// 480 is chosen to comfortably fit inside the available space in TOR cells
-	CellSize = 480
+	// 478 is chosen due to being largest app cell that is always one Tor relay cell, following tests
+	CellSize = 478
 
 	// Tick is how often cells are transferred
 	Tick = 500 * time.Millisecond

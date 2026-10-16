@@ -36,12 +36,12 @@ func run() error {
 	var err error
 
 	// if socks is empty, connect directly to relay, otherwise connect through socks
-	log.Println("connecting to relay...")
 	if *socksAddress == "" {
+		log.Println("connecting to relay...")
 		connection, err = net.Dial("tcp", net.JoinHostPort(*relayHost, chat.DefaultPort))
 	} else {
 		d, err := proxy.SOCKS5("tcp", *socksAddress,
-			nil, // no auth rn
+			&proxy.Auth{User: *name, Password: "x"}, // auth so clients go through different TOR circuits
 			proxy.Direct,
 		)
 		if err != nil {
@@ -49,6 +49,7 @@ func run() error {
 		}
 		log.Println("sat up SOCKS")
 
+		log.Printf("connecting to relay at %s...", *relayHost)
 		connection, err = d.Dial("tcp", net.JoinHostPort(*relayHost, chat.DefaultPort))
 	}
 
@@ -93,7 +94,7 @@ func (c *client) receive() error {
 		var name string
 		var seq, sentUs int
 		fmt.Sscanf(string(frame.Body[:]), "%s %d %d", &name, &seq, &sentUs)
-		fmt.Printf("Name %s, Seq %d, SentUs %d\n", name, seq, sentUs)
+		fmt.Printf("Name %s, Seq %d, SentUs %d, Lat %d\n", name, seq, sentUs, time.Now().UnixMicro()-int64(sentUs))
 	}
 }
 
