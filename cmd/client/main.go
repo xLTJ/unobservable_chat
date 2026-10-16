@@ -18,7 +18,7 @@ type client struct {
 
 var name = flag.String("name", "Anonymous", "name to display")
 var relayHost = flag.String("relay", chat.DefaultRelayHost, "address of relay")
-var socksAddress = flag.String("socks", chat.DefaultSocksAddress, "address of socks proxy")
+var socksAddress = flag.String("socks", "", "address of socks proxy, empty for direct") // check params for which to use
 
 func main() {
 	// do whatever here idk
@@ -42,7 +42,15 @@ func run() error {
 	}
 	log.Println("connected to socks proxy")
 
-	connection, err := d.Dial("tcp", fmt.Sprintf("%s:%s", *relayHost, chat.DefaultPort))
+	var connection net.Conn
+
+	// if socks is empty, connect directly to relay, otherwise connect through socks
+	if *socksAddress == "" {
+		connection, err = net.Dial("tcp", "127.0.0.1:9735")
+	} else {
+		connection, err = d.Dial("tcp", fmt.Sprintf("%s:%s", *relayHost, chat.DefaultPort))
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to connect to relay: %v", err)
 	}
