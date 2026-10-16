@@ -17,9 +17,6 @@ const (
 	// DefaultPort is the default port for the relay. Arbitrary, can be whatever.
 	DefaultPort = "9735"
 
-	// DefaultRelayHost is the default relay host
-	DefaultRelayHost = "zrwinlyycafeeygkgl6gtot2ajdy35zmievlkgif6xfaokumsynldkqd.onion"
-
 	// DefaultSocksAddress is the default socks proxy address.
 	DefaultSocksAddress = "127.0.0.1:9052"
 )

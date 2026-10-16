@@ -17,7 +17,7 @@ type client struct {
 }
 
 var name = flag.String("name", "Anonymous", "name to display")
-var relayHost = flag.String("relay", chat.DefaultRelayHost, "address of relay")
+var relayHost = flag.String("relay", "127.0.0.1", "host of relay")
 var socksAddress = flag.String("socks", "", "address of socks proxy, empty for direct") // check params for which to use
 
 func main() {
@@ -32,23 +32,24 @@ func main() {
 }
 
 func run() error {
-	log.Println("connecting to relay...")
-	d, err := proxy.SOCKS5("tcp", *socksAddress,
-		nil, // no auth rn
-		proxy.Direct,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to connect to socks proxy: %v", err)
-	}
-	log.Println("connected to socks proxy")
-
 	var connection net.Conn
+	var err error
 
 	// if socks is empty, connect directly to relay, otherwise connect through socks
+	log.Println("connecting to relay...")
 	if *socksAddress == "" {
-		connection, err = net.Dial("tcp", "127.0.0.1:9735")
+		connection, err = net.Dial("tcp", net.JoinHostPort(*relayHost, chat.DefaultPort))
 	} else {
-		connection, err = d.Dial("tcp", fmt.Sprintf("%s:%s", *relayHost, chat.DefaultPort))
+		d, err := proxy.SOCKS5("tcp", *socksAddress,
+			nil, // no auth rn
+			proxy.Direct,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create SOCKS dial: %v", err)
+		}
+		log.Println("sat up SOCKS")
+
+		connection, err = d.Dial("tcp", net.JoinHostPort(*relayHost, chat.DefaultPort))
 	}
 
 	if err != nil {
