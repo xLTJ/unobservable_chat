@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"io"
 	"log"
 	"net"
 	"os/signal"
@@ -136,17 +135,15 @@ func handleUser(user *user, room *room) {
 
 // receiveCells reads cells from the user's connection and sends them to the room's cells channel
 func receiveCells(user *user, room *room) {
-	var buffer chat.Cell
-
 	for {
-		_, err := io.ReadFull(user.conn, buffer[:])
+		cell, err := chat.ReadCell(user.conn)
 		if err != nil {
 			log.Println("Failed to read from connection: ", err)
 			room.removeUser <- user
 			break
 		}
 
-		room.cells <- userCell{user: user, cell: buffer}
+		room.cells <- userCell{user: user, cell: cell}
 	}
 }
 

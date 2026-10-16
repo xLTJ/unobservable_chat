@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"time"
@@ -56,15 +55,14 @@ func run() error {
 }
 
 func (c *client) receive() error {
-	var buffer chat.Cell
 	for {
-		_, err := io.ReadFull(c.conn, buffer[:])
+		cell, err := chat.ReadCell(c.conn)
 		if err != nil {
 			return fmt.Errorf("failed to read from server: %v", err)
 		}
 
 		// decode frame, then print it
-		frame, err := chat.Decode(buffer)
+		frame, err := chat.Decode(cell)
 		if err != nil {
 			// drop invalid frames
 			log.Println("Failed to decode frame: ", err)
@@ -80,14 +78,12 @@ func (c *client) receive() error {
 
 func (c *client) send() error {
 	ticker := time.NewTicker(chat.Tick)
-	done := make(chan bool)
+	defer ticker.Stop()
 
 	seq := 1
 
 	for {
 		select {
-		case <-done:
-			return nil
 		case <-ticker.C:
 			frame := chat.Frame{
 				Kind: chat.KindData,

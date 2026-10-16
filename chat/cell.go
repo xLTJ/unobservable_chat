@@ -1,6 +1,9 @@
 package chat
 
-import "fmt"
+import (
+	"fmt"
+	"io"
+)
 
 // size of every part of the cell
 const (
@@ -54,4 +57,12 @@ func Decode(c Cell) (Frame, error) {
 
 	copy(frame.Body[:], c[1:])
 	return frame, nil
+}
+
+// ReadCell reads a Cell from a reader
+func ReadCell(r io.Reader) (Cell, error) {
+	var buffer Cell
+
+	_, err := io.ReadFull(r, buffer[:])
+	return buffer, err
 }
