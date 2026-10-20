@@ -3,19 +3,24 @@ package chat
 import (
 	"fmt"
 	"io"
+
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 // size of every part of the cell
 const (
-	KindSize     = 1
-	BodySize     = CellSize - KindSize
-	NonceSize    = 24 // defined by chacha20poly1305.NonceSizeX
-	TagSize      = 16 // defined by chacha20poly1305.Overhead
-	PlaintxtSize = BodySize - NonceSize - TagSize
+	KindSize      = 1
+	BodySize      = CellSize - KindSize
+	NonceSize     = chacha20poly1305.NonceSizeX
+	TagSize       = chacha20poly1305.Overhead
+	PlaintextSize = BodySize - NonceSize - TagSize
+	InnerHeader   = 3 // flag + length
+	PayloadMax    = PlaintextSize - InnerHeader
 )
 
 type Cell [CellSize]byte
 type Kind byte
+type Flag byte
 
 // kinds of cells
 const (
@@ -26,9 +31,20 @@ const (
 	KindRelayControl
 )
 
+// kinds of flags
+const (
+	FlagDummy   Flag = 0x00
+	FlagMessage Flag = 0x01
+)
+
 type Frame struct {
 	Kind Kind
 	Body [BodySize]byte
+}
+
+type Plaintext struct {
+	Flag    Flag
+	Payload []byte
 }
 
 // Encode takes a Frame and encodes into a Cell

@@ -19,4 +19,7 @@ const (
 
 	// DefaultSocksAddress is the default socks proxy address.
 	DefaultSocksAddress = "127.0.0.1:9052"
+
+	// TestKey is the key used for testing until onboarding is implemented
+	TestKey = "SkudOZ4gDGrwjwJybc7dEtj4HNIcdZxg"
 )
