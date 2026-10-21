@@ -71,6 +71,7 @@ func (r *room) startRoom() {
 
 func main() {
 	// do whatever here idk
+	flag.Parse()
 
 	// run relay, log any exit errors
 	err := run()

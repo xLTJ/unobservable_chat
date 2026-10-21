@@ -188,6 +188,10 @@ func (c *client) handleInput() error {
 		c.payloadSendChan <- payload
 	}
 
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("failed to read from stdin: %v", err)
+	}
+
 	// block until client exits
 	select {}
 }
