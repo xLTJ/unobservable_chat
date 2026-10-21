@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"log"
 	"net"
 	"os/signal"
@@ -27,6 +28,9 @@ type room struct {
 	removeUser chan *user
 	cells      chan userCell
 }
+
+// flags
+var verboseLogging = flag.Bool("v", false, "enable verbose logging")
 
 // startRoom runs the room's event loop. launch as a goroutine
 func (r *room) startRoom() {
@@ -141,6 +145,10 @@ func receiveCells(user *user, room *room) {
 			log.Println("Failed to read from connection: ", err)
 			room.removeUser <- user
 			break
+		}
+
+		if *verboseLogging {
+			log.Printf("Received cell: %s\n", cell)
 		}
 
 		room.cells <- userCell{user: user, cell: cell}

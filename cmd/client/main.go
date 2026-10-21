@@ -1,21 +1,31 @@
 package main
 
 import (
+	"bufio"
+	"crypto/cipher"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"time"
 
 	"github.com/xLTJ/unobservable_chat/chat"
+	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/net/proxy"
 )
 
 type client struct {
-	conn net.Conn
-	name string
+	conn            net.Conn
+	name            string
+	payloadSendChan chan []byte
+	aead            cipher.AEAD
 }
 
+const payloadChanSize = 100
+
+// flags
 var name = flag.String("name", "Anonymous", "name to display")
 var relayHost = flag.String("relay", "127.0.0.1", "host of relay")
 var socksAddress = flag.String("socks", "", "address of socks proxy, empty for direct") // check params for which to use
@@ -57,21 +67,32 @@ func run() error {
 		return fmt.Errorf("failed to connect to relay: %v", err)
 	}
 	defer func() { _ = connection.Close() }()
-	fmt.Println("connected to relay")
+	log.Println("connected to relay")
+
+	// create AEAD
+	aead, err := chacha20poly1305.NewX([]byte(chat.TestKey))
+	if err != nil {
+		return fmt.Errorf("failed to create AEAD: %v", err)
+	}
 
 	// create client
 	client := client{
-		conn: connection,
-		name: *name,
+		conn:            connection,
+		name:            *name,
+		payloadSendChan: make(chan []byte, payloadChanSize),
+		aead:            aead,
 	}
 
 	// new and improved awesome error handling
-	errChan := make(chan error, 2)
+	errChan := make(chan error, 3)
 	go func() {
 		errChan <- client.receive()
 	}()
 	go func() {
 		errChan <- client.send()
+	}()
+	go func() {
+		errChan <- client.handleInput()
 	}()
 	return <-errChan
 }
@@ -83,18 +104,30 @@ func (c *client) receive() error {
 			return fmt.Errorf("failed to read from server: %v", err)
 		}
 
-		// decode frame, then print it
+		// decode frame
 		frame, err := chat.Decode(cell)
 		if err != nil {
-			// drop invalid frames
-			log.Println("Failed to decode frame: ", err)
+			// just drop invalid frames and continue
+			// log.Println("Failed to decode cell: ", err) // debug
 			continue
 		}
 
-		var name string
-		var seq, sentUs int
-		fmt.Sscanf(string(frame.Body[:]), "%s %d %d", &name, &seq, &sentUs)
-		fmt.Printf("Name %s, Seq %d, SentUs %d, Lat %d\n", name, seq, sentUs, time.Now().UnixMicro()-int64(sentUs))
+		// open data to access plaintext
+		plaintext, err := chat.OpenData(c.aead, frame)
+		if errors.Is(err, chat.ErrOpen) {
+			continue // ErrOpen drops silently if the frame is tampered with
+		}
+		if err != nil {
+			log.Println("Failed to open frame: ", err)
+			continue
+		}
+
+		// ignore dummies
+		if plaintext.Flag == chat.FlagDummy {
+			continue
+		}
+
+		fmt.Println(string(plaintext.Payload))
 	}
 }
 
@@ -102,28 +135,59 @@ func (c *client) send() error {
 	ticker := time.NewTicker(chat.Tick)
 	defer ticker.Stop()
 
-	seq := 1
+	for range ticker.C {
+		var plaintext chat.Plaintext
 
-	for {
+		// if a payload is queued, create a message from it, otherwise create a dummy message
 		select {
-		case <-ticker.C:
-			frame := chat.Frame{
-				Kind: chat.KindData,
-				Body: [chat.BodySize]byte{},
+		case payload := <-c.payloadSendChan:
+			plaintext = chat.Plaintext{
+				Flag:    chat.FlagMessage,
+				Payload: payload,
 			}
+		default:
+			plaintext.Flag = chat.FlagDummy
+		}
 
-			message := fmt.Sprintf("%s %d %d", c.name, seq, time.Now().UnixMicro())
-			copy(frame.Body[:], message)
-			cell, err := frame.Encode()
-			if err != nil {
-				return fmt.Errorf("failed to encode frame: %v", err)
-			}
+		// seal data and encode it into a cell
+		frame, err := chat.SealData(c.aead, plaintext)
+		if err != nil {
+			return fmt.Errorf("failed to seal frame: %v", err)
+		}
+		cell, err := frame.Encode()
+		if err != nil {
+			return fmt.Errorf("failed to encode frame: %v", err)
+		}
 
-			_, err = c.conn.Write(cell[:])
-			if err != nil {
-				return fmt.Errorf("failed to write to server: %v", err)
-			}
-			seq++
+		// and send it
+		_, err = c.conn.Write(cell[:])
+		if err != nil {
+			return fmt.Errorf("failed to write to server: %v", err)
 		}
 	}
+
+	return nil
+}
+
+func (c *client) handleInput() error {
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		payload := []byte(scanner.Text())
+
+		// until fragmentation is implemented, messages cannot exceed the size of one payload
+		if len(payload) > chat.PayloadMax {
+			log.Println("error: message too long")
+			continue
+		}
+
+		// skip empty messages
+		if len(payload) == 0 {
+			continue
+		}
+
+		c.payloadSendChan <- payload
+	}
+
+	// block until client exits
+	select {}
 }
