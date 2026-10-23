@@ -9,13 +9,13 @@ import (
 
 // size of every part of the cell
 const (
-	KindSize      = 1
-	BodySize      = CellSize - KindSize
-	NonceSize     = chacha20poly1305.NonceSizeX
-	TagSize       = chacha20poly1305.Overhead
-	PlaintextSize = BodySize - NonceSize - TagSize
-	InnerHeader   = 3 // flag + length
-	PayloadMax    = PlaintextSize - InnerHeader
+	KindSize        = 1
+	BodySize        = CellSize - KindSize
+	NonceSize       = chacha20poly1305.NonceSizeX
+	TagSize         = chacha20poly1305.Overhead
+	PlaintextSize   = BodySize - NonceSize - TagSize
+	InnerHeaderSize = 3 // flag + length
+	PayloadMaxSize  = PlaintextSize - InnerHeaderSize
 )
 
 type Cell [CellSize]byte
@@ -46,6 +46,8 @@ type Plaintext struct {
 	Flag    Flag
 	Payload []byte
 }
+
+// --------------------------------------------
 
 // Encode takes a Frame and encodes into a Cell
 func (f Frame) Encode() (Cell, error) {

@@ -64,8 +64,8 @@ func TestDerivedSizes(t *testing.T) {
 	if PlaintextSize != 437 {
 		t.Errorf("PlaintextSize = %d, want 437", PlaintextSize)
 	}
-	if PayloadMax != 434 {
-		t.Errorf("PayloadMax = %d, want 434", PayloadMax)
+	if PayloadMaxSize != 434 {
+		t.Errorf("PayloadMax = %d, want 434", PayloadMaxSize)
 	}
 	if NonceSize+PlaintextSize+TagSize != BodySize {
 		t.Errorf("nonce + plaintext + tag = %d, want BodySize %d", NonceSize+PlaintextSize+TagSize, BodySize)
@@ -114,14 +114,14 @@ func TestPayloadMax(t *testing.T) {
 	aead := newTestAEAD(t)
 
 	// exactly PayloadMax bytes fits
-	full := bytes.Repeat([]byte{'x'}, PayloadMax)
+	full := bytes.Repeat([]byte{'x'}, PayloadMaxSize)
 	got := roundtrip(t, aead, Plaintext{Flag: FlagMessage, Payload: full})
 	if !bytes.Equal(got.Payload, full) {
 		t.Error("a PayloadMax message came back different")
 	}
 
 	// one more byte is rejected, never truncated (D-044)
-	over := bytes.Repeat([]byte{'x'}, PayloadMax+1)
+	over := bytes.Repeat([]byte{'x'}, PayloadMaxSize+1)
 	if _, err := SealData(aead, Plaintext{Flag: FlagMessage, Payload: over}); err == nil {
 		t.Error("SealData accepted a payload of PayloadMax+1 bytes")
 	}
@@ -136,7 +136,7 @@ func TestOpenRejectsBadPlaintext(t *testing.T) {
 
 	var badLen [PlaintextSize]byte
 	badLen[0] = byte(FlagMessage)
-	binary.BigEndian.PutUint16(badLen[1:3], PayloadMax+1)
+	binary.BigEndian.PutUint16(badLen[1:3], PayloadMaxSize+1)
 
 	for name, pt := range map[string][PlaintextSize]byte{"invalid flag": badFlag, "len over PayloadMax": badLen} {
 		_, err := OpenData(aead, sealRaw(aead, pt))
@@ -147,5 +147,19 @@ func TestOpenRejectsBadPlaintext(t *testing.T) {
 		if errors.Is(err, ErrOpen) {
 			t.Errorf("%s: got ErrOpen, want a plaintext error", name)
 		}
+	}
+}
+
+func TestFillerFrame(t *testing.T) {
+	// SPEC §6.2: a data-type cell with 477 random bytes
+	f := MakeFillerFrame()
+	if f.Kind != KindData {
+		t.Errorf("filler kind = %d, want %d", f.Kind, KindData)
+	}
+	if f.Body == [BodySize]byte{} {
+		t.Error("filler body is all zeros, want random bytes")
+	}
+	if _, err := f.Encode(); err != nil {
+		t.Errorf("Encode: %v", err)
 	}
 }

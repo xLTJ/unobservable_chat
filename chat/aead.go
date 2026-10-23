@@ -8,9 +8,15 @@ import (
 	"fmt"
 )
 
+func MakeFillerFrame() Frame {
+	f := Frame{Kind: KindData}
+	_, _ = rand.Read(f.Body[:])
+	return f
+}
+
 func SealData(aead cipher.AEAD, p Plaintext) (Frame, error) {
-	if len(p.Payload) > PayloadMax {
-		return Frame{}, fmt.Errorf("payload too long: %d > %d", len(p.Payload), PayloadMax)
+	if len(p.Payload) > PayloadMaxSize {
+		return Frame{}, fmt.Errorf("payload too long: %d > %d", len(p.Payload), PayloadMaxSize)
 	}
 
 	var plaintextArray [PlaintextSize]byte
@@ -62,10 +68,10 @@ func OpenData(aead cipher.AEAD, f Frame) (Plaintext, error) {
 	if flag != FlagDummy && flag != FlagMessage {
 		return Plaintext{}, fmt.Errorf("invalid flag: %d", flag)
 	}
-	if length > PayloadMax {
+	if length > PayloadMaxSize {
 		return Plaintext{}, fmt.Errorf("invalid length: %d", length)
 	}
-	payload := plaintext[InnerHeader : InnerHeader+length]
+	payload := plaintext[InnerHeaderSize : InnerHeaderSize+length]
 
 	return Plaintext{
 		Flag:    flag,

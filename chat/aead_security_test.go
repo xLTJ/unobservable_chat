@@ -90,7 +90,7 @@ func TestOpenRejectsWrongKey(t *testing.T) {
 // TestOpenRejectsFiller checks if OpenData correctly rejects a KindData frame with filler as its body
 func TestOpenRejectsFiller(t *testing.T) {
 	var filler [BodySize]byte
-	rand.Read(filler[:])
+	_, _ = rand.Read(filler[:])
 
 	frame := Frame{
 		Kind: KindData,

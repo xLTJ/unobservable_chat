@@ -12,11 +12,16 @@ import (
 	"github.com/xLTJ/unobservable_chat/chat"
 )
 
+const outboxSize = 8
+
+// user is a connected user in the chat system.
+// it holds the user's connection and a channel for the user's outbox (cells that goes out to the user)
 type user struct {
-	conn          net.Conn
-	incomingCells chan userCell
+	conn   net.Conn
+	outbox chan userCell
 }
 
+// userCell holds the user who sent the cell and the cell itself
 type userCell struct {
 	user *user
 	cell chat.Cell
@@ -37,8 +42,19 @@ func (r *room) startRoom() {
 	for {
 		select {
 		case user := <-r.addUser:
+			// send the user a control frame with the number of users in the room
+			userCount := len(r.users)
+			controlFrame := chat.MakeControlFrame(userCount)
+			controlCell, err := controlFrame.Encode()
+			if err != nil {
+				log.Println("Failed to encode control frame: ", err)
+				continue
+			}
+			user.outbox <- userCell{cell: controlCell}
+
+			// add the user to the room
 			r.users[user] = true
-			log.Println("user joined room")
+			log.Println("added user to room")
 
 		case user := <-r.removeUser:
 			// if the user is not in the room (like if they were already removed), ignore
@@ -47,7 +63,7 @@ func (r *room) startRoom() {
 			}
 
 			_ = user.conn.Close()
-			close(user.incomingCells)
+			close(user.outbox)
 			delete(r.users, user)
 			log.Println("removed user from room")
 
@@ -59,7 +75,7 @@ func (r *room) startRoom() {
 				}
 
 				select {
-				case user.incomingCells <- cell:
+				case user.outbox <- cell:
 				default:
 					// if the user's incomingCells channel is full, drop the cell and log
 					log.Println("user's incomingCells channel is full, dropping cell")
@@ -111,8 +127,8 @@ func run() error {
 			}
 
 			user := user{
-				conn:          conn,
-				incomingCells: make(chan userCell, 8),
+				conn:   conn,
+				outbox: make(chan userCell, outboxSize),
 			}
 			go handleUser(&user, &room)
 		}
@@ -152,13 +168,20 @@ func receiveCells(user *user, room *room) {
 			log.Printf("Received cell: %s\n", cell)
 		}
 
+		// relay only forwards data and handshake frames to other users
+		cellKind := chat.Kind(cell[0])
+		if cellKind != chat.KindData && cellKind != chat.KindHandshake {
+			log.Println("received invalid cell kind: ", cellKind)
+			continue
+		}
+
 		room.cells <- userCell{user: user, cell: cell}
 	}
 }
 
 // sendCells reads from the user's incomingCells channel and sends them to the user's connection
 func sendCells(user *user, room *room) {
-	for incomingCell := range user.incomingCells {
+	for incomingCell := range user.outbox {
 		_, err := user.conn.Write(incomingCell.cell[:])
 		if err != nil {
 			log.Println("Failed to write to connection: ", err)

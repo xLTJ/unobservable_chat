@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/cipher"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,6 +22,8 @@ type client struct {
 	name            string
 	payloadSendChan chan []byte
 	aead            cipher.AEAD
+	kRoom           []byte
+	password        string
 }
 
 const payloadChanSize = 100
@@ -42,8 +45,17 @@ func main() {
 }
 
 func run() error {
+	// before anything else, get the password from the environment. no password = instant death
+	password := os.Getenv("UC_PASSWORD")
+	if password == "" {
+		return fmt.Errorf("environment variable UC_PASSWORD is not set")
+	}
+	password, err := chat.NormalisePassword(password)
+	if err != nil {
+		return fmt.Errorf("failed to normalise password: %v", err)
+	}
+
 	var connection net.Conn
-	var err error
 
 	// if socks is empty, connect directly to relay, otherwise connect through socks
 	if *socksAddress == "" {
@@ -69,21 +81,21 @@ func run() error {
 	defer func() { _ = connection.Close() }()
 	log.Println("connected to relay")
 
-	// create AEAD
-	aead, err := chacha20poly1305.NewX([]byte(chat.TestKey))
-	if err != nil {
-		return fmt.Errorf("failed to create AEAD: %v", err)
-	}
-
 	// create client
 	client := client{
 		conn:            connection,
 		name:            *name,
 		payloadSendChan: make(chan []byte, payloadChanSize),
-		aead:            aead,
+		password:        password,
 	}
 
-	// new and improved awesome error handling
+	// before continuing anything else, do onboarding
+	err = client.handleOnboarding()
+	if err != nil {
+		return fmt.Errorf("onboarding failed: %v", err)
+	}
+
+	// launch all the goroutines
 	errChan := make(chan error, 3)
 	go func() {
 		errChan <- client.receive()
@@ -95,6 +107,51 @@ func run() error {
 		errChan <- client.handleInput()
 	}()
 	return <-errChan
+}
+
+func (c *client) handleOnboarding() error {
+	// wait for onboard cell and open decode it
+	cell, err := chat.ReadCell(c.conn)
+	if err != nil {
+		return fmt.Errorf("failed to read from server: %v", err)
+	}
+	frame, err := chat.Decode(cell)
+	if err != nil {
+		return fmt.Errorf("failed to decode onboard frame: %v", err)
+	}
+
+	// check if kind is relay control
+	if frame.Kind != chat.KindRelayControl {
+		return fmt.Errorf("expected first cell to be a control cell, got %d", frame.Kind)
+	}
+
+	// parse control frame to get earlier
+	earlier, err := chat.ParseControl(frame)
+	if err != nil {
+		return fmt.Errorf("failed to parse control frame: %v", err)
+	}
+
+	// next steps depend on earlier
+	switch {
+	case earlier > chat.RoomCap-1:
+		// room is full, exit
+		return fmt.Errorf("room is full")
+	case earlier == 0:
+		// room is empty so found a new one. just generate new kRoom and AEAD and carry on
+		kRoom := make([]byte, 32)
+		_, _ = rand.Read(kRoom)
+		c.kRoom = kRoom
+
+		aead, err := chacha20poly1305.NewX(c.kRoom)
+		if err != nil {
+			return fmt.Errorf("failed to create AEAD: %v", err)
+		}
+		c.aead = aead
+	default:
+
+	}
+
+	return nil
 }
 
 func (c *client) receive() error {
@@ -175,7 +232,7 @@ func (c *client) handleInput() error {
 		payload := []byte(scanner.Text())
 
 		// until fragmentation is implemented, messages cannot exceed the size of one payload
-		if len(payload) > chat.PayloadMax {
+		if len(payload) > chat.PayloadMaxSize {
 			log.Println("error: message too long")
 			continue
 		}

@@ -14,6 +14,10 @@ const (
 	// Tick is how often cells are transferred
 	Tick = 500 * time.Millisecond
 
+	// JoinTimeout is how many ticks a joiner waits for a reply before giving up.
+	// equal to 10 seconds, left long due to Tor being very... unpredicable time-wise
+	JoinTimeout = 20
+
 	// DefaultPort is the default port for the relay. Arbitrary, can be whatever.
 	DefaultPort = "9735"
 
