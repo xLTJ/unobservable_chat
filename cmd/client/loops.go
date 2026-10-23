@@ -35,93 +35,11 @@ func (c *client) receive() error {
 
 		switch frame.Kind {
 		case chat.KindData:
-			// no aead means that the client has not yet joined a room, ignore data frames
-			if c.aead == nil {
-				continue
-			}
+			c.handleData(frame)
 
-			// open data to access plaintext
-			plaintext, err := chat.OpenData(c.aead, frame)
-			if errors.Is(err, chat.ErrOpen) {
-				continue // ErrOpen drops silently if the frame is tampered with
-			}
-			if err != nil {
-				log.Println("failed to open frame: ", err)
-				continue
-			}
-
-			// ignore dummies
-			if plaintext.Flag == chat.FlagDummy {
-				continue
-			}
-
-			fmt.Println(string(plaintext.Payload))
 		case chat.KindHandshake:
-			handshake, err := chat.ParseHandshake(frame)
-			if err != nil {
-				log.Println("failed to parse handshake: ", err)
-				continue
-			}
-
-			if c.kRoom != nil {
-				// client is a member, check if subtype is correct, then exchange, wrap, reply
-				if handshake.Subtype != chat.SubtypeMsgA {
-					// normal traffic, ignore
-					continue
-				}
-
-				msgB, memberISK, err := cpace.Exchange(c.password, c.cpaceContext, handshake.MsgA)
-				if err != nil {
-					log.Println("failed to exchange: ", err)
-					continue
-				}
-				wrap, err := chat.SealWrap(memberISK, c.kRoom)
-				if err != nil {
-					log.Println("failed to seal wrap: ", err)
-					continue
-				}
-
-				select {
-				case c.handshakeOutChan <- chat.MakeReplyFrame(handshake.Sid, msgB, wrap):
-				default:
-					log.Println("failed to send reply frame: channel is full, dropping frame")
-				}
-			} else {
-				// otherwise client is a joiner, check subtype, see if sid matches, then finish and unwrap
-				if handshake.Subtype != chat.SubtypeReply {
-					// normal traffic, ignore
-					continue
-				}
-
-				if !bytes.Equal(handshake.Sid, c.sid) {
-					// sid does not match, this is normal when two joiners overlap, just ignore
-					continue
-				}
-				joinerISK, err := c.cpaceState.Finish(handshake.MsgB)
-				if err != nil {
-					return fmt.Errorf("failed to finish CPace: %v", err)
-				}
-				c.cpaceState = nil // no longer needed
-
-				kRoom, err := chat.OpenWrap(joinerISK, handshake.Wrap)
-				if len(kRoom) != 32 {
-					return fmt.Errorf("failed to open wrap: wrong length")
-				}
-				if err != nil {
-					return fmt.Errorf("refused: wrong password")
-				}
-				c.kRoom = kRoom
-
-				// create AEAD and set it
-				aead, err := chacha20poly1305.NewX(kRoom)
-				if err != nil {
-					return fmt.Errorf("failed to create AEAD: %v", err)
-				}
-				c.keyReadyChan <- aead
-				c.aead = aead
-
-				// now we can also remove the deadline
-				_ = c.conn.SetReadDeadline(time.Time{})
+			if err := c.handleHandshake(frame); err != nil {
+				return fmt.Errorf("failed to handle handshake: %v", err)
 			}
 		case chat.KindRelayControl:
 			// the client should never recieve a relay control frame from the relay after the first one, this is a bug
@@ -132,6 +50,100 @@ func (c *client) receive() error {
 			continue
 		}
 	}
+}
+
+func (c *client) handleData(frame chat.Frame) {
+	// no aead means that the client has not yet joined a room, ignore data frames
+	if c.aead == nil {
+		return
+	}
+
+	// open data to access plaintext
+	plaintext, err := chat.OpenData(c.aead, frame)
+	if errors.Is(err, chat.ErrOpen) {
+		return // ErrOpen drops silently if the frame is tampered with
+	}
+	if err != nil {
+		log.Println("failed to open frame: ", err)
+		return
+	}
+
+	// ignore dummies
+	if plaintext.Flag == chat.FlagDummy {
+		return
+	}
+
+	fmt.Println(string(plaintext.Payload))
+}
+
+func (c *client) handleHandshake(frame chat.Frame) error {
+	handshake, err := chat.ParseHandshake(frame)
+	if err != nil {
+		log.Println("failed to parse handshake: ", err)
+		return nil
+	}
+
+	if c.kRoom != nil {
+		// client is a member, check if subtype is correct, then exchange, wrap, reply
+		if handshake.Subtype != chat.SubtypeMsgA {
+			// normal traffic, ignore
+			return nil
+		}
+
+		msgB, memberISK, err := cpace.Exchange(c.password, c.cpaceContext, handshake.MsgA)
+		if err != nil {
+			log.Println("failed to exchange: ", err)
+			return nil
+		}
+		wrap, err := chat.SealWrap(memberISK, c.kRoom)
+		if err != nil {
+			log.Println("failed to seal wrap: ", err)
+			return nil
+		}
+
+		select {
+		case c.handshakeOutChan <- chat.MakeReplyFrame(handshake.Sid, msgB, wrap):
+		default:
+			log.Println("failed to send reply frame: channel is full, dropping frame")
+		}
+	} else {
+		// otherwise client is a joiner, check subtype, see if sid matches, then finish and unwrap
+		if handshake.Subtype != chat.SubtypeReply {
+			// normal traffic, ignore
+			return nil
+		}
+
+		if !bytes.Equal(handshake.Sid, c.sid) {
+			// sid does not match, this is normal when two joiners overlap, just ignore
+			return nil
+		}
+		joinerISK, err := c.cpaceState.Finish(handshake.MsgB)
+		if err != nil {
+			return fmt.Errorf("failed to finish CPace: %v", err)
+		}
+		c.cpaceState = nil // no longer needed
+
+		kRoom, err := chat.OpenWrap(joinerISK, handshake.Wrap)
+		if len(kRoom) != 32 {
+			return fmt.Errorf("failed to open wrap: wrong length")
+		}
+		if err != nil {
+			return fmt.Errorf("refused: wrong password")
+		}
+		c.kRoom = kRoom
+
+		// create AEAD and set it
+		aead, err := chacha20poly1305.NewX(kRoom)
+		if err != nil {
+			return fmt.Errorf("failed to create AEAD: %v", err)
+		}
+		c.keyReadyChan <- aead
+		c.aead = aead
+
+		// now we can also remove the deadline
+		_ = c.conn.SetReadDeadline(time.Time{})
+	}
+	return nil
 }
 
 func (c *client) send() error {
