@@ -92,6 +92,7 @@ func ParseHandshake(f Frame) (h Handshake, err error) {
 	switch h.Subtype {
 	case SubtypeMsgA:
 		h.MsgA = f.Body[1 : 1+MsgASize]
+		h.Sid = f.Body[1 : 1+SidSize]
 	case SubtypeReply:
 		h.Sid, b = b[:SidSize], b[SidSize:]
 		h.MsgB, b = b[:MsgBSize], b[MsgBSize:]
@@ -112,8 +113,8 @@ func NormalisePassword(password string) (string, error) {
 	return precis.OpaqueString.String(password)
 }
 
-// CPaceContext returns a context info object that can be used to create a CPace context
-func CPaceContext() *cpace.ContextInfo {
+// MakeCpaceContext returns a context info object that can be used to create a CPace context
+func MakeCpaceContext() *cpace.ContextInfo {
 	// include length in the AD, as the label length is variable
 	length := uint16(len(contextLabel))
 	ad := binary.BigEndian.AppendUint16(nil, length)

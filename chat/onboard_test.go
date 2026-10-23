@@ -44,7 +44,7 @@ func onboard(t *testing.T, joinerPassword, memberPassword string, kRoom []byte) 
 	}
 
 	// joiner: msgA
-	msgA, state, err := cpace.Start(joinerPw, CPaceContext())
+	msgA, state, err := cpace.Start(joinerPw, MakeCpaceContext())
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -55,7 +55,7 @@ func onboard(t *testing.T, joinerPassword, memberPassword string, kRoom []byte) 
 	if err != nil || h.Subtype != SubtypeMsgA {
 		t.Fatalf("member parsing msgA: sub-type %#x, err %v", h.Subtype, err)
 	}
-	msgB, memberISK, err := cpace.Exchange(memberPw, CPaceContext(), h.MsgA)
+	msgB, memberISK, err := cpace.Exchange(memberPw, MakeCpaceContext(), h.MsgA)
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -244,6 +244,10 @@ func TestMsgARoundtrip(t *testing.T) {
 	if !bytes.Equal(h.MsgA, msgA) {
 		t.Error("parsed msgA differs from the one sent")
 	}
+	// the sid is msgA's first 16 bytes; a member echoes it in its reply
+	if !bytes.Equal(h.Sid, msgA[:SidSize]) {
+		t.Error("parsed sid is not the first SidSize bytes of msgA")
+	}
 }
 
 func TestReplyRoundtrip(t *testing.T) {
@@ -316,11 +320,11 @@ func TestOnboardEquivalentPasswords(t *testing.T) {
 
 func TestCPaceContextStable(t *testing.T) {
 	// both sides build their own context, so two calls must agree byte for byte
-	msgA, state, err := cpace.Start("pw", CPaceContext())
+	msgA, state, err := cpace.Start("pw", MakeCpaceContext())
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	msgB, memberISK, err := cpace.Exchange("pw", CPaceContext(), msgA)
+	msgB, memberISK, err := cpace.Exchange("pw", MakeCpaceContext(), msgA)
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
