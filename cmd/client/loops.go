@@ -102,6 +102,7 @@ func (c *client) answerJoin(handshake chat.Handshake) {
 		return
 	}
 
+	log.Println("user requested to join, exchanging...")
 	msgB, memberISK, err := cpace.Exchange(c.password, c.cpaceContext, handshake.MsgA)
 	if err != nil {
 		log.Println("failed to exchange: ", err)
@@ -118,6 +119,7 @@ func (c *client) answerJoin(handshake chat.Handshake) {
 	default:
 		log.Println("failed to send reply frame: channel is full, dropping frame")
 	}
+	log.Println("reply sent")
 }
 
 func (c *client) finishJoin(handshake chat.Handshake) error {
@@ -130,6 +132,7 @@ func (c *client) finishJoin(handshake chat.Handshake) error {
 		// sid does not match, this is normal when two joiners overlap, just ignore
 		return nil
 	}
+	log.Println("reply received, joining room...")
 	joinerISK, err := c.cpaceState.Finish(handshake.MsgB)
 	if err != nil {
 		return fmt.Errorf("failed to finish CPace: %v", err)
@@ -137,9 +140,6 @@ func (c *client) finishJoin(handshake chat.Handshake) error {
 	c.cpaceState = nil // no longer needed
 
 	kRoom, err := chat.OpenWrap(joinerISK, handshake.Wrap)
-	if len(kRoom) != 32 {
-		return fmt.Errorf("failed to open wrap: wrong length")
-	}
 	if err != nil {
 		return fmt.Errorf("refused: wrong password")
 	}
@@ -155,6 +155,7 @@ func (c *client) finishJoin(handshake chat.Handshake) error {
 
 	// now we can also remove the deadline
 	_ = c.conn.SetReadDeadline(time.Time{})
+	log.Println("room successfully joined")
 	return nil
 }
 

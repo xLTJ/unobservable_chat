@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"fmt"
+	"log"
 	"time"
 
 	"filippo.io/cpace"
@@ -12,6 +13,8 @@ import (
 
 // handleOnboarding handles the synchronous part of the onboarding process
 func (c *client) handleOnboarding() error {
+	log.Println("onboarding...")
+
 	// wait for onboard cell and open decode it
 	cell, err := chat.ReadCell(c.conn)
 	if err != nil {
@@ -26,6 +29,7 @@ func (c *client) handleOnboarding() error {
 	if frame.Kind != chat.KindRelayControl {
 		return fmt.Errorf("expected first cell to be a control cell, got %d", frame.Kind)
 	}
+	log.Println("received relay control")
 
 	// parse control frame to get earlier
 	earlier, err := chat.ParseControl(frame)
@@ -40,6 +44,8 @@ func (c *client) handleOnboarding() error {
 		return fmt.Errorf("room is full")
 	case earlier == 0:
 		// room is empty so this user is a founder. just generate new kRoom and AEAD and carry on
+		log.Println("room empty, creating a new room...")
+
 		kRoom := make([]byte, 32)
 		_, _ = rand.Read(kRoom)
 		c.kRoom = kRoom
@@ -50,8 +56,10 @@ func (c *client) handleOnboarding() error {
 		}
 		c.keyReadyChan <- aead
 		c.aead = aead
+		log.Println("room successfully created")
 	default:
 		// otherwise, this user is a joiner
+		log.Println("room exists, joining...")
 
 		// initiate a new PAKE exchange, create msgA and the cpace state
 		msgA, state, err := cpace.Start(c.password, c.cpaceContext)
@@ -64,6 +72,7 @@ func (c *client) handleOnboarding() error {
 		c.sid = msgA[:chat.SidSize]
 
 		// send msgA to handshake channel, to be handled later
+		log.Println("initiating handshake...")
 		msgAFrame := chat.MakeMsgAFrame(msgA)
 		c.handshakeOutChan <- msgAFrame
 
