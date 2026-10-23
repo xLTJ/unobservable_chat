@@ -19,7 +19,7 @@ func (c *client) receive() error {
 	for {
 		cell, err := chat.ReadCell(c.conn)
 		if errors.Is(err, os.ErrDeadlineExceeded) {
-			return fmt.Errorf("connection timed out")
+			return fmt.Errorf("no reply from room")
 		}
 		if err != nil {
 			return fmt.Errorf("failed to read from server: %v", err)
@@ -116,10 +116,10 @@ func (c *client) answerJoin(handshake chat.Handshake) {
 
 	select {
 	case c.handshakeOutChan <- chat.MakeReplyFrame(handshake.Sid, msgB, wrap):
+		log.Println("reply sent")
 	default:
 		log.Println("failed to send reply frame: channel is full, dropping frame")
 	}
-	log.Println("reply sent")
 }
 
 func (c *client) finishJoin(handshake chat.Handshake) error {
@@ -141,7 +141,7 @@ func (c *client) finishJoin(handshake chat.Handshake) error {
 
 	kRoom, err := chat.OpenWrap(joinerISK, handshake.Wrap)
 	if err != nil {
-		return fmt.Errorf("refused: wrong password")
+		return fmt.Errorf("wrong password, or the room name is in use with a different password")
 	}
 	c.kRoom = kRoom
 
@@ -190,7 +190,7 @@ func (c *client) send() error {
 		}
 
 		// if no key is set yet, send filler frame for this tick
-		if c.kRoom == nil {
+		if c.aead == nil {
 			fillerFrame := chat.MakeFillerFrame()
 			fillerCell, err := fillerFrame.Encode()
 			if err != nil {
