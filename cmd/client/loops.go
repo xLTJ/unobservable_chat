@@ -85,64 +85,76 @@ func (c *client) handleHandshake(frame chat.Frame) error {
 
 	if c.kRoom != nil {
 		// client is a member, check if subtype is correct, then exchange, wrap, reply
-		if handshake.Subtype != chat.SubtypeMsgA {
-			// normal traffic, ignore
-			return nil
-		}
-
-		msgB, memberISK, err := cpace.Exchange(c.password, c.cpaceContext, handshake.MsgA)
-		if err != nil {
-			log.Println("failed to exchange: ", err)
-			return nil
-		}
-		wrap, err := chat.SealWrap(memberISK, c.kRoom)
-		if err != nil {
-			log.Println("failed to seal wrap: ", err)
-			return nil
-		}
-
-		select {
-		case c.handshakeOutChan <- chat.MakeReplyFrame(handshake.Sid, msgB, wrap):
-		default:
-			log.Println("failed to send reply frame: channel is full, dropping frame")
-		}
+		c.answerJoin(handshake)
 	} else {
 		// otherwise client is a joiner, check subtype, see if sid matches, then finish and unwrap
-		if handshake.Subtype != chat.SubtypeReply {
-			// normal traffic, ignore
-			return nil
-		}
-
-		if !bytes.Equal(handshake.Sid, c.sid) {
-			// sid does not match, this is normal when two joiners overlap, just ignore
-			return nil
-		}
-		joinerISK, err := c.cpaceState.Finish(handshake.MsgB)
+		err := c.finishJoin(handshake)
 		if err != nil {
-			return fmt.Errorf("failed to finish CPace: %v", err)
+			return fmt.Errorf("failed to finish join: %v", err)
 		}
-		c.cpaceState = nil // no longer needed
-
-		kRoom, err := chat.OpenWrap(joinerISK, handshake.Wrap)
-		if len(kRoom) != 32 {
-			return fmt.Errorf("failed to open wrap: wrong length")
-		}
-		if err != nil {
-			return fmt.Errorf("refused: wrong password")
-		}
-		c.kRoom = kRoom
-
-		// create AEAD and set it
-		aead, err := chacha20poly1305.NewX(kRoom)
-		if err != nil {
-			return fmt.Errorf("failed to create AEAD: %v", err)
-		}
-		c.keyReadyChan <- aead
-		c.aead = aead
-
-		// now we can also remove the deadline
-		_ = c.conn.SetReadDeadline(time.Time{})
 	}
+	return nil
+}
+
+func (c *client) answerJoin(handshake chat.Handshake) {
+	if handshake.Subtype != chat.SubtypeMsgA {
+		// normal traffic, ignore
+		return
+	}
+
+	msgB, memberISK, err := cpace.Exchange(c.password, c.cpaceContext, handshake.MsgA)
+	if err != nil {
+		log.Println("failed to exchange: ", err)
+		return
+	}
+	wrap, err := chat.SealWrap(memberISK, c.kRoom)
+	if err != nil {
+		log.Println("failed to seal wrap: ", err)
+		return
+	}
+
+	select {
+	case c.handshakeOutChan <- chat.MakeReplyFrame(handshake.Sid, msgB, wrap):
+	default:
+		log.Println("failed to send reply frame: channel is full, dropping frame")
+	}
+}
+
+func (c *client) finishJoin(handshake chat.Handshake) error {
+	if handshake.Subtype != chat.SubtypeReply {
+		// normal traffic, ignore
+		return nil
+	}
+
+	if !bytes.Equal(handshake.Sid, c.sid) {
+		// sid does not match, this is normal when two joiners overlap, just ignore
+		return nil
+	}
+	joinerISK, err := c.cpaceState.Finish(handshake.MsgB)
+	if err != nil {
+		return fmt.Errorf("failed to finish CPace: %v", err)
+	}
+	c.cpaceState = nil // no longer needed
+
+	kRoom, err := chat.OpenWrap(joinerISK, handshake.Wrap)
+	if len(kRoom) != 32 {
+		return fmt.Errorf("failed to open wrap: wrong length")
+	}
+	if err != nil {
+		return fmt.Errorf("refused: wrong password")
+	}
+	c.kRoom = kRoom
+
+	// create AEAD and set it
+	aead, err := chacha20poly1305.NewX(kRoom)
+	if err != nil {
+		return fmt.Errorf("failed to create AEAD: %v", err)
+	}
+	c.keyReadyChan <- aead
+	c.aead = aead
+
+	// now we can also remove the deadline
+	_ = c.conn.SetReadDeadline(time.Time{})
 	return nil
 }
 
