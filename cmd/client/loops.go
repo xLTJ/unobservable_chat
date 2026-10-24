@@ -190,7 +190,7 @@ func (c *client) send() error {
 		}
 
 		// if no key is set yet, send filler frame for this tick
-		if c.aead == nil {
+		if aeadCopy == nil {
 			fillerFrame := chat.MakeFillerFrame()
 			fillerCell, err := fillerFrame.Encode()
 			if err != nil {
