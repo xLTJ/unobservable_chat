@@ -19,7 +19,7 @@ func (c *client) receive() error {
 	for {
 		cell, err := chat.ReadCell(c.conn)
 		if errors.Is(err, os.ErrDeadlineExceeded) {
-			return fmt.Errorf("no reply from room")
+			return fmt.Errorf("no reply from the room")
 		}
 		if err != nil {
 			return fmt.Errorf("failed to read from server: %v", err)

@@ -20,6 +20,7 @@ type client struct {
 
 	aead     cipher.AEAD
 	kRoom    []byte
+	roomName string
 	password string
 
 	sid              []byte
@@ -33,6 +34,7 @@ const payloadChanSize = 100
 
 // flags
 var name = flag.String("name", "Anonymous", "name to display")
+var room = flag.String("room", "", "name of room to join")
 var relayHost = flag.String("relay", "127.0.0.1", "host of relay")
 var socksAddress = flag.String("socks", "", "address of socks proxy, empty for direct") // check params for which to use
 
@@ -56,6 +58,12 @@ func run() error {
 	password, err := chat.NormalisePassword(password)
 	if err != nil {
 		return fmt.Errorf("failed to normalise password: %v", err)
+	}
+
+	// then the room name
+	roomName, err := chat.NormaliseRoomName(*room)
+	if err != nil {
+		return fmt.Errorf("failed to normalise room name: %v", err)
 	}
 
 	var connection net.Conn
@@ -90,7 +98,8 @@ func run() error {
 		name:             *name,
 		payloadSendChan:  make(chan []byte, payloadChanSize),
 		password:         password,
-		cpaceContext:     chat.MakeCpaceContext(),
+		roomName:         roomName,
+		cpaceContext:     chat.MakeCpaceContext(roomName),
 		handshakeOutChan: make(chan chat.Frame, chat.RoomCap-1),
 		keyReadyChan:     make(chan cipher.AEAD, 1),
 	}

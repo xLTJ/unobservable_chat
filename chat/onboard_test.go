@@ -3,10 +3,14 @@ package chat
 import (
 	"bytes"
 	"crypto/rand"
+	"strings"
 	"testing"
 
 	"filippo.io/cpace"
 )
+
+// testRoom is an already-normalised room name, used wherever the room doesn't matter.
+const testRoom = "test room"
 
 // randomBytes returns n bytes from crypto/rand, standing in for real CPace output or a key.
 func randomBytes(n int) []byte {
@@ -31,8 +35,15 @@ func throughWire(t *testing.T, f Frame) Frame {
 
 // onboard runs one join the way SPEC §7.4 does it, both sides in one process, every
 // message through a frame and the wire format. It returns the K_room the joiner got
-// out of the wrap, or OpenWrap's error.
+// out of the wrap, or OpenWrap's error. Both sides are in testRoom.
 func onboard(t *testing.T, joinerPassword, memberPassword string, kRoom []byte) ([]byte, error) {
+	t.Helper()
+	return onboardInRooms(t, testRoom, testRoom, joinerPassword, memberPassword, kRoom)
+}
+
+// onboardInRooms is onboard with each side's room name given. The names go into the
+// CPace context as they are, so pass them already normalised.
+func onboardInRooms(t *testing.T, joinerRoom, memberRoom, joinerPassword, memberPassword string, kRoom []byte) ([]byte, error) {
 	t.Helper()
 	joinerPw, err := NormalisePassword(joinerPassword)
 	if err != nil {
@@ -44,7 +55,7 @@ func onboard(t *testing.T, joinerPassword, memberPassword string, kRoom []byte) 
 	}
 
 	// joiner: msgA
-	msgA, state, err := cpace.Start(joinerPw, MakeCpaceContext())
+	msgA, state, err := cpace.Start(joinerPw, MakeCpaceContext(joinerRoom))
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -55,7 +66,7 @@ func onboard(t *testing.T, joinerPassword, memberPassword string, kRoom []byte) 
 	if err != nil || h.Subtype != SubtypeMsgA {
 		t.Fatalf("member parsing msgA: sub-type %#x, err %v", h.Subtype, err)
 	}
-	msgB, memberISK, err := cpace.Exchange(memberPw, MakeCpaceContext(), h.MsgA)
+	msgB, memberISK, err := cpace.Exchange(memberPw, MakeCpaceContext(memberRoom), h.MsgA)
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -175,7 +186,8 @@ func TestNormalisePasswordRejects(t *testing.T) {
 }
 
 func TestControlRoundtrip(t *testing.T) {
-	for earlier := 0; earlier < RoomCap; earlier++ {
+	// 0 to RoomCap-1 is the count; RoomCap means the room is full (SPEC §3.6, D-108)
+	for earlier := 0; earlier <= RoomCap; earlier++ {
 		f := MakeControlFrame(earlier)
 		if f.Kind != KindRelayControl {
 			t.Fatalf("earlier=%d: kind = %d, want %d", earlier, f.Kind, KindRelayControl)
@@ -208,7 +220,7 @@ func TestControlRoundtrip(t *testing.T) {
 }
 
 func TestParseControlRejectsOtherKinds(t *testing.T) {
-	for _, k := range []Kind{KindData, KindHandshake} {
+	for _, k := range []Kind{KindData, KindHandshake, KindHello} {
 		if _, err := ParseControl(Frame{Kind: k}); err == nil {
 			t.Errorf("ParseControl accepted a frame of kind %d", k)
 		}
@@ -320,11 +332,11 @@ func TestOnboardEquivalentPasswords(t *testing.T) {
 
 func TestCPaceContextStable(t *testing.T) {
 	// both sides build their own context, so two calls must agree byte for byte
-	msgA, state, err := cpace.Start("pw", MakeCpaceContext())
+	msgA, state, err := cpace.Start("pw", MakeCpaceContext(testRoom))
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	msgB, memberISK, err := cpace.Exchange("pw", MakeCpaceContext(), msgA)
+	msgB, memberISK, err := cpace.Exchange("pw", MakeCpaceContext(testRoom), msgA)
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -333,6 +345,227 @@ func TestCPaceContextStable(t *testing.T) {
 		t.Fatalf("Finish: %v", err)
 	}
 	if !bytes.Equal(joinerISK, memberISK) {
-		t.Error("same password, two CPaceContext() calls: the keys differ")
+		t.Error("same password, two MakeCpaceContext calls: the keys differ")
+	}
+}
+
+// ------------- W5: hello, room names (SPEC §3.7, D-108, D-109) -------------
+
+func TestHelloConstants(t *testing.T) {
+	// wire values fixed by SPEC §3.7; 0x00 is not a valid mode
+	if ModePrivate != 0x01 {
+		t.Errorf("ModePrivate = %#x, want 0x01", ModePrivate)
+	}
+	if ModePublic != 0x02 {
+		t.Errorf("ModePublic = %#x, want 0x02", ModePublic)
+	}
+	// one length byte (SPEC §1 derived sizes)
+	if RoomNameMaxSize != 255 {
+		t.Errorf("RoomNameMaxSize = %d, want 255", RoomNameMaxSize)
+	}
+	// the longest hello must fit one body: mode + len + name
+	if n := 2 + RoomNameMaxSize; n > BodySize {
+		t.Errorf("longest hello uses %d body bytes, more than BodySize %d", n, BodySize)
+	}
+}
+
+func TestNormaliseRoomName(t *testing.T) {
+	// PRECIS Nickname via CompareKey (RFC 8266, D-109). Expected values checked
+	// against x/text v0.43.0 on 2026-11-11.
+	for _, tc := range []struct {
+		name, in, want string
+	}{
+		{"lower case unchanged", "book club", "book club"},
+		{"case folded", "Book Club", "book club"},
+		{"all caps", "BOOK CLUB", "book club"},
+		{"non-ascii case folded", "ÆBLE", "æble"},
+		{"leading and trailing spaces trimmed", " book club ", "book club"},
+		{"inner spaces collapsed", "book   club", "book club"},
+		{"non-breaking space to space", "book club", "book club"},
+		{"fullwidth letters to ascii (NFKC)", "Ｂｏｏｋ club", "book club"},
+		{"ligature split (NFKC)", "ﬁsh", "fish"},
+		{"decomposed é composed", "café", "café"},
+		{"composed é unchanged", "café", "café"},
+	} {
+		got, err := NormaliseRoomName(tc.in)
+		if err != nil {
+			t.Errorf("%s: error %v", tc.name, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestNormaliseRoomNameMeets(t *testing.T) {
+	// the point of D-109: spellings people would treat as the same name give the same bytes
+	spellings := []string{"Book Club", "book  club ", " BOOK CLUB", "book club", "Ｂｏｏｋ Club"}
+	want, err := NormaliseRoomName(spellings[0])
+	if err != nil {
+		t.Fatalf("%q: %v", spellings[0], err)
+	}
+	for _, s := range spellings[1:] {
+		got, err := NormaliseRoomName(s)
+		if err != nil {
+			t.Errorf("%q: %v", s, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q gives %q, %q gives %q", s, got, spellings[0], want)
+		}
+	}
+}
+
+func TestNormaliseRoomNameIdempotent(t *testing.T) {
+	// a name normalised twice must not change again
+	for _, in := range []string{"Book Club", "Ｂｏｏｋ", "café", " a  b "} {
+		once, err := NormaliseRoomName(in)
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		twice, err := NormaliseRoomName(once)
+		if err != nil {
+			t.Fatalf("%q, second time: %v", once, err)
+		}
+		if once != twice {
+			t.Errorf("%q: first %q, then %q", in, once, twice)
+		}
+	}
+}
+
+func TestNormaliseRoomNameLength(t *testing.T) {
+	// the limit is on the normalised bytes, not the raw input (SPEC §3.7)
+	for _, tc := range []struct {
+		name string
+		in   string
+		ok   bool
+	}{
+		{"one byte", "x", true},
+		{"255 ascii", strings.Repeat("a", 255), true},
+		{"256 ascii", strings.Repeat("a", 256), false},
+		{"255 bytes of 2-byte runes plus one", strings.Repeat("é", 127) + "a", true},
+		{"256 bytes of 2-byte runes", strings.Repeat("é", 128), false},
+		{"over 255 raw, 255 after trimming", "  " + strings.Repeat("a", 255) + "  ", true},
+		{"upper case, 255 after folding", strings.Repeat("É", 127) + "A", true},
+	} {
+		got, err := NormaliseRoomName(tc.in)
+		if tc.ok && err != nil {
+			t.Errorf("%s: rejected: %v", tc.name, err)
+		}
+		if !tc.ok && err == nil {
+			t.Errorf("%s: accepted, %d bytes", tc.name, len(got))
+		}
+		if err == nil && len(got) > RoomNameMaxSize {
+			t.Errorf("%s: returned %d bytes, more than RoomNameMaxSize", tc.name, len(got))
+		}
+	}
+}
+
+func TestNormaliseRoomNameRejects(t *testing.T) {
+	for name, in := range map[string]string{
+		"empty":             "",
+		"only spaces":       "   ",
+		"control character": "book\tclub",
+	} {
+		if _, err := NormaliseRoomName(in); err == nil {
+			t.Errorf("%s: accepted %q", name, in)
+		}
+	}
+}
+
+func TestHelloRoundtrip(t *testing.T) {
+	names := []string{"x", "book club", "café", strings.Repeat("a", RoomNameMaxSize)}
+	for _, mode := range []Mode{ModePrivate, ModePublic} {
+		for _, name := range names {
+			f, err := MakeHelloFrame(mode, name)
+			if err != nil {
+				t.Fatalf("mode %#x, %d-byte name: MakeHelloFrame: %v", mode, len(name), err)
+			}
+			if f.Kind != KindHello {
+				t.Fatalf("kind = %d, want %d", f.Kind, KindHello)
+			}
+
+			// SPEC §3.7: 0x03 | mode | len | name | zeros
+			n := len(name)
+			if f.Body[0] != byte(mode) || f.Body[1] != byte(n) {
+				t.Errorf("mode %#x, %d-byte name: body starts % x, want %02x %02x", mode, n, f.Body[:2], byte(mode), byte(n))
+			}
+			if string(f.Body[2:2+n]) != name {
+				t.Errorf("mode %#x, %d-byte name: name is not at body bytes [2:%d]", mode, n, 2+n)
+			}
+			if !bytes.Equal(f.Body[2+n:], make([]byte, BodySize-2-n)) {
+				t.Errorf("mode %#x, %d-byte name: bytes after the name are not all zero", mode, n)
+			}
+
+			gotMode, gotName, err := ParseHello(throughWire(t, f))
+			if err != nil {
+				t.Fatalf("mode %#x, %d-byte name: ParseHello: %v", mode, n, err)
+			}
+			if gotMode != mode || gotName != name {
+				t.Errorf("parsed (%#x, %q), want (%#x, %q)", gotMode, gotName, mode, name)
+			}
+		}
+	}
+}
+
+func TestMakeHelloFrameRejects(t *testing.T) {
+	// an over-long name would wrap the length byte, so it must be an error, not a cell
+	for _, tc := range []struct {
+		name string
+		mode Mode
+		room string
+	}{
+		{"empty name", ModePrivate, ""},
+		{"256-byte name", ModePrivate, strings.Repeat("a", RoomNameMaxSize+1)},
+		{"mode 0x00", Mode(0x00), "book club"},
+		{"mode 0x03", Mode(0x03), "book club"},
+	} {
+		if _, err := MakeHelloFrame(tc.mode, tc.room); err == nil {
+			t.Errorf("%s: accepted", tc.name)
+		}
+	}
+}
+
+func TestParseHelloRejects(t *testing.T) {
+	// the relay closes a connection whose first cell doesn't parse (SPEC §6.1)
+	for _, k := range []Kind{KindData, KindHandshake, KindRelayControl} {
+		f := Frame{Kind: k}
+		f.Body[0], f.Body[1], f.Body[2] = byte(ModePrivate), 1, 'x'
+		if _, _, err := ParseHello(f); err == nil {
+			t.Errorf("accepted a frame of kind %d", k)
+		}
+	}
+	for _, mode := range []byte{0x00, 0x03, 0xff} {
+		f := Frame{Kind: KindHello}
+		f.Body[0], f.Body[1], f.Body[2] = mode, 1, 'x'
+		if _, _, err := ParseHello(f); err == nil {
+			t.Errorf("accepted mode %#x", mode)
+		}
+	}
+	f := Frame{Kind: KindHello}
+	f.Body[0] = byte(ModePrivate) // len stays 0
+	if _, _, err := ParseHello(f); err == nil {
+		t.Error("accepted an empty name")
+	}
+}
+
+func TestOnboardEquivalentRoomNames(t *testing.T) {
+	// two spellings of one room name, normalised on each side, must still onboard (D-109)
+	joinerRoom, err := NormaliseRoomName("Book Club")
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberRoom, err := NormaliseRoomName(" book  club")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kRoom := randomBytes(32)
+	got, err := onboardInRooms(t, joinerRoom, memberRoom, "pw", "pw", kRoom)
+	if err != nil {
+		t.Fatalf("OpenWrap: %v", err)
+	}
+	if !bytes.Equal(got, kRoom) {
+		t.Error("the joiner got a different K_room")
 	}
 }

@@ -145,11 +145,11 @@ func TestContextBindsAD(t *testing.T) {
 	password := "gleep glorp strong password"
 
 	// control: both sides use the same context
-	msgA, state, err := cpace.Start(password, MakeCpaceContext())
+	msgA, state, err := cpace.Start(password, MakeCpaceContext("name"))
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	msgB, memberISK, err := cpace.Exchange(password, MakeCpaceContext(), msgA)
+	msgB, memberISK, err := cpace.Exchange(password, MakeCpaceContext("name"), msgA)
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestContextBindsAD(t *testing.T) {
 	}
 
 	// now with a different context (using some random ad)
-	msgA, state, err = cpace.Start(password, MakeCpaceContext())
+	msgA, state, err = cpace.Start(password, MakeCpaceContext("name"))
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

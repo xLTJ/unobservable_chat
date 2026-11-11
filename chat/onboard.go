@@ -30,11 +30,24 @@ const (
 	WrapSize    = NonceSize + chacha20poly1305.KeySize + TagSize
 )
 
+// other consts
+const (
+	RoomNameMaxSize = 255
+)
+
+// types and enums used in the onboarding
+
 type Subtype byte
+type Mode byte
 
 const (
 	SubtypeMsgA Subtype = iota + 1
 	SubtypeReply
+)
+
+const (
+	ModePrivate Mode = iota + 1
+	ModePublic
 )
 
 type Handshake struct {
@@ -68,6 +81,26 @@ func MakeReplyFrame(sid, msgB, wrap []byte) Frame {
 	f.Body[0] = byte(SubtypeReply)
 	copy(f.Body[1:], slices.Concat(sid, msgB, wrap))
 	return f
+}
+
+func MakeHelloFrame(mode Mode, name string) (Frame, error) {
+	if mode != ModePrivate && mode != ModePublic {
+		return Frame{}, fmt.Errorf("invalid mode: %d", mode)
+	}
+	if len(name) > RoomNameMaxSize || len(name) == 0 {
+		return Frame{}, fmt.Errorf("invalid room name size: %q", name)
+	}
+
+	// construct the frame. the body is: mode, len, name. the rest is zeroes
+	f := Frame{Kind: KindHello}
+	body := slices.Concat(
+		[]byte{byte(mode)},
+		[]byte{byte(len(name))},
+		[]byte(name),
+	)
+
+	copy(f.Body[:], body)
+	return f, nil
 }
 
 // -------------- frame parsers --------------
@@ -104,6 +137,26 @@ func ParseHandshake(f Frame) (h Handshake, err error) {
 	return h, nil
 }
 
+func ParseHello(f Frame) (mode Mode, name string, err error) {
+	if f.Kind != KindHello {
+		return Mode(0), "", fmt.Errorf("frame is not a hello frame")
+	}
+
+	mode = Mode(f.Body[0])
+	if mode != ModePrivate && mode != ModePublic {
+		return Mode(0), "", fmt.Errorf("invalid mode: %d", mode)
+	}
+
+	length := int(f.Body[1])
+	if length == 0 {
+		return Mode(0), "", fmt.Errorf("invalid room name length: %d", length)
+	}
+
+	name = string(f.Body[2 : 2+length])
+
+	return
+}
+
 // ------------- onboarding functions ------------
 
 // NormalisePassword returns a string that is suitable for use as a password.
@@ -113,12 +166,25 @@ func NormalisePassword(password string) (string, error) {
 	return precis.OpaqueString.String(password)
 }
 
+// NormaliseRoomName normalises a room name to so stuff like case and spacing differences are ignored
+func NormaliseRoomName(name string) (string, error) {
+	normalized, err := precis.Nickname.CompareKey(name)
+	if err != nil {
+		return "", fmt.Errorf("failed to normalise room name: %v", err)
+	}
+	if len(normalized) > RoomNameMaxSize {
+		return "", fmt.Errorf("room name too long")
+	}
+	return normalized, nil
+}
+
 // MakeCpaceContext returns a context info object that can be used to create a CPace context
-func MakeCpaceContext() *cpace.ContextInfo {
-	// include length in the AD, as the label length is variable
-	length := uint16(len(contextLabel))
-	ad := binary.BigEndian.AppendUint16(nil, length)
+func MakeCpaceContext(roomName string) *cpace.ContextInfo {
+	// include lengths in the AD, as the label length is variable
+	ad := binary.BigEndian.AppendUint16(nil, uint16(len(contextLabel)))
 	ad = append(ad, contextLabel...)
+	ad = binary.BigEndian.AppendUint16(ad, uint16(len(roomName)))
+	ad = append(ad, roomName...)
 
 	return cpace.NewContextInfo("", "", ad)
 }
