@@ -118,6 +118,40 @@ func (r *relay) runRooms() {
 				continue
 			}
 
+			// handshake cells with msgA subtype get special treatment; only gets sent to the oldest user in the room
+			cellType := chat.Kind(c.cell[0])
+			if cellType == chat.KindHandshake {
+				cellSubType := chat.Subtype(c.cell[1])
+
+				if cellSubType == chat.SubtypeMsgA {
+					// find the oldest member in the room
+					var oldestMember *user
+					for u := range rm.users {
+						if u == c.user {
+							continue
+						}
+
+						if oldestMember == nil || u.arrivalNumber < oldestMember.arrivalNumber {
+							oldestMember = u
+						}
+					}
+
+					// no other members in the room, drop the cell
+					if oldestMember == nil {
+						log.Println("no other members, dropping cell")
+						continue
+					}
+
+					select {
+					case oldestMember.outbox <- c:
+					default:
+						log.Println("oldest member's outbox channel is full, dropping cell")
+					}
+
+					continue
+				}
+			}
+
 			// send the cell to all users in the room
 			for u := range rm.users {
 				// skip sending to the user who sent the cell
@@ -128,8 +162,8 @@ func (r *relay) runRooms() {
 				select {
 				case u.outbox <- c:
 				default:
-					// if the user's incomingCells channel is full, drop the cell and log
-					log.Println("user's incomingCells channel is full, dropping cell")
+					// if the user's outbox channel is full, drop the cell and log
+					log.Println("user's outbox channel is full, dropping cell")
 				}
 			}
 		}
@@ -257,10 +291,10 @@ func receiveCells(u *user, r *relay) {
 	}
 }
 
-// sendCells reads from the user's incomingCells channel and sends them to the user's connection
+// sendCells reads from the user's outbox channel and sends them to the user's connection
 func sendCells(u *user, r *relay) {
-	for incomingCell := range u.outbox {
-		_, err := u.conn.Write(incomingCell.cell[:])
+	for cell := range u.outbox {
+		_, err := u.conn.Write(cell.cell[:])
 		if err != nil {
 			log.Println("Error: failed to write to connection: ", err)
 			r.removeUser <- u

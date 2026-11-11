@@ -178,3 +178,41 @@ func TestContextBindsAD(t *testing.T) {
 		t.Errorf("the two sides got the same ISK when using different contexts")
 	}
 }
+
+// TestOnboardOtherRoomRefused checks that a joiner in a different room gets no K_room.
+func TestOnboardOtherRoomRefused(t *testing.T) {
+	// control test with the same room name
+	joinerRoom, err := NormaliseRoomName("glorp club")
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberRoom, err := NormaliseRoomName("glorp club")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kRoom := randomBytes(32)
+	got, err := onboardInRooms(t, joinerRoom, memberRoom, "pw", "pw", kRoom)
+	if err != nil {
+		t.Fatalf("OpenWrap: %v", err)
+	}
+	if !bytes.Equal(got, kRoom) {
+		t.Error("the joiner got a different K_room for the same room")
+	}
+
+	// now with different room names
+	joinerRoom, err = NormaliseRoomName("glorp club")
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberRoom, err = NormaliseRoomName("gleeb club")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = onboardInRooms(t, joinerRoom, memberRoom, "pw", "pw", kRoom)
+	if err == nil {
+		t.Errorf("the wrap opened with the wrong room name")
+	}
+	if got != nil {
+		t.Errorf("the joiner got some kind of K_room with the wrong room name")
+	}
+}
