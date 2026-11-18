@@ -7,6 +7,10 @@ const (
 	// might be increased in the future
 	RoomCap = 8
 
+	// RelayDownstreamCellAmount is how many cells that gets sent downstream each tick.
+	// 8 is chosen so that for a max of 7 other users, there is always one spare slot for a backlog to be drained
+	RelayDownstreamCellAmount = RoomCap
+
 	// CellSize is the total fixed length of a cell.
 	// 478 is chosen due to being largest app cell that is always one Tor relay cell, following tests
 	CellSize = 478

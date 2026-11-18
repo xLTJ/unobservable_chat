@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -8,11 +9,12 @@ import (
 	"net"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/xLTJ/unobservable_chat/chat"
 )
 
-const outboxSize = 8
+const outboxSize = 16
 
 // user is a connected user in the chat system.
 // it holds the user's connection and a channel for the user's outbox (cells that goes out to the user)
@@ -52,8 +54,10 @@ var verboseLogging = flag.Bool("v", false, "enable verbose logging")
 func (r *relay) runRooms() {
 	rooms := make(map[roomId]*room)
 
+	// relay's event loop, 3 different cases
 	for {
 		select {
+		// adding a user to a room
 		case u := <-r.addUser:
 			// look up the room, create it if it doesnt exist
 			rm, ok := rooms[u.roomId]
@@ -64,6 +68,7 @@ func (r *relay) runRooms() {
 			}
 
 			// send the user a control frame with the number of users in the room
+			// this is always the first frame sent to a user
 			userCount := len(rm.users)
 			controlFrame := chat.MakeControlFrame(userCount)
 			controlCell, err := controlFrame.Encode()
@@ -86,6 +91,7 @@ func (r *relay) runRooms() {
 			rm.nextArrivalNumber++
 			log.Printf("added user to room %s\n", u.roomId.roomName)
 
+		// removing a user from a room
 		case u := <-r.removeUser:
 			rm, ok := rooms[u.roomId]
 
@@ -107,6 +113,7 @@ func (r *relay) runRooms() {
 				log.Printf("removed room %s\n", u.roomId.roomName)
 			}
 
+		// receiving a cell from a user and (for data cells) forwarding it to all users in the room
 		case c := <-r.cells:
 			rm, ok := rooms[c.user.roomId]
 
@@ -254,6 +261,7 @@ func handleUser(u *user, r *relay) {
 		return
 	}
 
+	// extract mode (public or private) and room name from hello cell
 	mode, name, err := chat.ParseHello(helloFrame)
 	if err != nil {
 		log.Println("Error: failed to parse hello cell: ", err)
@@ -293,12 +301,67 @@ func receiveCells(u *user, r *relay) {
 
 // sendCells reads from the user's outbox channel and sends them to the user's connection
 func sendCells(u *user, r *relay) {
-	for cell := range u.outbox {
-		_, err := u.conn.Write(cell.cell[:])
+	// sendBatch holds the next batch of cells to be sent to the user the next tick
+	sendBatch := make([][]byte, 0, chat.RelayDownstreamCellAmount)
+
+	// the first message sent to a user has to be a control frame. before starting the loop, wait for it to arrive
+	controlCell, ok := <-u.outbox
+	if !ok {
+		log.Println("Error: user's outbox channel is closed")
+		return
+	}
+
+	sendBatch = append(sendBatch, controlCell.cell[:])
+
+	// start the loop
+	ticker := time.NewTicker(chat.Tick)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// fill up the sendBatch with cells from the user's outbox channel until it is full or the outbox is empty
+	drainLoop:
+		for len(sendBatch) < chat.RelayDownstreamCellAmount {
+			select {
+			case cell, ok := <-u.outbox:
+				if !ok {
+					// if the outbox is closed here, it is due to a full or removed room.
+					// send the control frame and return
+					_, err := u.conn.Write(bytes.Join(sendBatch, nil))
+					if err != nil {
+						log.Println("Error: failed to write to connection: ", err)
+						r.removeUser <- u
+						return
+					}
+					return
+				}
+				sendBatch = append(sendBatch, cell.cell[:])
+			default:
+				break drainLoop
+			}
+		}
+
+		// if the batch is not full, fill out the rest with filler cells
+		for len(sendBatch) < chat.RelayDownstreamCellAmount {
+			fillerFrame := chat.MakeFillerFrame()
+			fillerCell, err := fillerFrame.Encode()
+			if err != nil {
+				log.Println("Error: failed to encode filler frame: ", err)
+				r.removeUser <- u
+				return
+			}
+			sendBatch = append(sendBatch, fillerCell[:])
+		}
+
+		// send the batch.
+		// clients takes a fixed number of bytes, so we can do it as a single write and it will get split correctly
+		_, err := u.conn.Write(bytes.Join(sendBatch, nil))
 		if err != nil {
 			log.Println("Error: failed to write to connection: ", err)
 			r.removeUser <- u
-			break
+			return
 		}
+
+		// reset the batch
+		sendBatch = sendBatch[:0]
 	}
 }
