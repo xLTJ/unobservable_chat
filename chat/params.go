@@ -14,6 +14,9 @@ const (
 	// MessageMaxLen is the maximum length of a message
 	MessageMaxLen = 4096
 
+	// FragmentsMax is the maximum number of fragments a message can have
+	FragmentsMax = 10
+
 	// DisplayNameMaxLen is the maximum length of a display name
 	DisplayNameMaxLen = 32
 

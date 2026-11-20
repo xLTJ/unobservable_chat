@@ -29,6 +29,15 @@ type client struct {
 	cpaceContext     *cpace.ContextInfo
 	handshakeOutChan chan chat.Frame  // channel for outgoing handshake messages
 	keyReadyChan     chan cipher.AEAD // channel to pass the key to the send goroutine, avoiding a race condition
+
+	messagesInProgress map[[4]byte]*inProgress // messages in progress, keyed by sender id
+}
+
+// inProgress is used to keep track of fragmented messages that are being received
+type inProgress struct {
+	msgNum            uint16
+	nextFragmentIndex byte
+	body              []byte
 }
 
 const payloadChanSize = 100
@@ -103,14 +112,15 @@ func run() error {
 
 	// create client
 	client := client{
-		conn:             connection,
-		name:             *name,
-		payloadSendChan:  make(chan []byte, payloadChanSize),
-		password:         password,
-		roomName:         roomName,
-		cpaceContext:     chat.MakeCpaceContext(roomName),
-		handshakeOutChan: make(chan chat.Frame, chat.RoomCap-1),
-		keyReadyChan:     make(chan cipher.AEAD, 1),
+		conn:               connection,
+		name:               *name,
+		payloadSendChan:    make(chan []byte, payloadChanSize),
+		password:           password,
+		roomName:           roomName,
+		cpaceContext:       chat.MakeCpaceContext(roomName),
+		handshakeOutChan:   make(chan chat.Frame, chat.RoomCap-1),
+		keyReadyChan:       make(chan cipher.AEAD, 1),
+		messagesInProgress: make(map[[4]byte]*inProgress),
 	}
 
 	// before continuing anything else, do onboarding

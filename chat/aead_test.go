@@ -131,17 +131,17 @@ func TestSealOpenHeader(t *testing.T) {
 	// the header fields survive the trip, for a middle fragment and a last one
 	for _, last := range []bool{false, true} {
 		want := Plaintext{
-			Flag:    FlagMessage,
-			Payload: []byte("fragment"),
-			Sender:  [4]byte{1, 2, 3, 4},
-			MsgNum:  65535,
-			Index:   9,
-			Last:    last,
+			Flag:          FlagMessage,
+			Payload:       []byte("fragment"),
+			Sender:        [4]byte{1, 2, 3, 4},
+			MsgNum:        65535,
+			FragmentIndex: 9,
+			Last:          last,
 		}
 		got := roundtrip(t, aead, want)
-		if got.Sender != want.Sender || got.MsgNum != want.MsgNum || got.Index != want.Index || got.Last != want.Last {
+		if got.Sender != want.Sender || got.MsgNum != want.MsgNum || got.FragmentIndex != want.FragmentIndex || got.Last != want.Last {
 			t.Errorf("header = sender % x, msg %d, index %d, last %v; want sender % x, msg %d, index %d, last %v",
-				got.Sender, got.MsgNum, got.Index, got.Last, want.Sender, want.MsgNum, want.Index, want.Last)
+				got.Sender, got.MsgNum, got.FragmentIndex, got.Last, want.Sender, want.MsgNum, want.FragmentIndex, want.Last)
 		}
 		if !bytes.Equal(got.Payload, want.Payload) {
 			t.Errorf("payload = %q, want %q", got.Payload, want.Payload)
@@ -154,12 +154,12 @@ func TestHeaderLayout(t *testing.T) {
 
 	// a roundtrip passes with any layout that seal and open agree on, so check the bytes against SPEC §3.3
 	p := Plaintext{
-		Flag:    FlagMessage,
-		Payload: []byte("hi"),
-		Sender:  [4]byte{0xde, 0xad, 0xbe, 0xef},
-		MsgNum:  0x1234,
-		Index:   9,
-		Last:    true,
+		Flag:          FlagMessage,
+		Payload:       []byte("hi"),
+		Sender:        [4]byte{0xde, 0xad, 0xbe, 0xef},
+		MsgNum:        0x1234,
+		FragmentIndex: 9,
+		Last:          true,
 	}
 	f, err := SealData(aead, p)
 	if err != nil {
@@ -177,12 +177,20 @@ func TestHeaderLayout(t *testing.T) {
 	}
 }
 
-func TestSealRejectsEmptyMessage(t *testing.T) {
+func TestSealRejectsBadPlaintext(t *testing.T) {
 	aead := newTestAEAD(t)
 
-	// a message carries 1–PayloadMax bytes, so an empty one would be an invalid cell (SPEC §3.3)
-	if _, err := SealData(aead, Plaintext{Flag: FlagMessage, Payload: []byte{}}); err == nil {
-		t.Error("SealData accepted a message with no payload")
+	// SealData never makes a cell the receiver would reject (SPEC §3.3): a message carries
+	// 1–PayloadMax bytes, a dummy none, and the flag is one of the two
+	cases := map[string]Plaintext{
+		"message with no payload": {Flag: FlagMessage, Payload: []byte{}},
+		"dummy with a payload":    {Flag: FlagDummy, Payload: []byte("x")},
+		"invalid flag":            {Flag: FlagMessage + 1, Payload: []byte("x")},
+	}
+	for what, p := range cases {
+		if _, err := SealData(aead, p); err == nil {
+			t.Errorf("%s: SealData accepted it", what)
+		}
 	}
 }
 
@@ -325,6 +333,7 @@ func TestParseBodyRejects(t *testing.T) {
 		"name_len past the end": append([]byte{10}, "abc"...),
 		"name not UTF-8":        {1, 0xff, 'h', 'i'},
 		"no text":               append([]byte{5}, "alice"...),
+		"text over 4096 bytes":  append([]byte{5}, "alice"+strings.Repeat("t", MessageMaxLen+1)...),
 	}
 	for what, body := range cases {
 		if _, _, err := ParseBody(body); err == nil {
@@ -390,16 +399,16 @@ func TestLongMessageThroughCells(t *testing.T) {
 	var joined []byte
 	for i, piece := range pieces {
 		p := Plaintext{
-			Flag:    FlagMessage,
-			Payload: piece,
-			Sender:  [4]byte{1, 2, 3, 4},
-			MsgNum:  7,
-			Index:   byte(i),
-			Last:    i == len(pieces)-1,
+			Flag:          FlagMessage,
+			Payload:       piece,
+			Sender:        [4]byte{1, 2, 3, 4},
+			MsgNum:        7,
+			FragmentIndex: byte(i),
+			Last:          i == len(pieces)-1,
 		}
 		got := roundtrip(t, aead, p)
-		if got.Index != p.Index || got.Last != p.Last {
-			t.Errorf("piece %d: index %d, last %v; want index %d, last %v", i, got.Index, got.Last, p.Index, p.Last)
+		if got.FragmentIndex != p.FragmentIndex || got.Last != p.Last {
+			t.Errorf("piece %d: index %d, last %v; want index %d, last %v", i, got.FragmentIndex, got.Last, p.FragmentIndex, p.Last)
 		}
 		joined = append(joined, got.Payload...)
 	}

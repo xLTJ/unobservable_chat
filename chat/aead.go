@@ -17,6 +17,10 @@ func MakeFillerFrame() Frame {
 
 // SealData encrypts plaintext into a data frame
 func SealData(aead cipher.AEAD, p Plaintext) (Frame, error) {
+	if p.Flag != FlagDummy && p.Flag != FlagMessage {
+		return Frame{}, fmt.Errorf("invalid flag: %d", p.Flag)
+	}
+
 	if len(p.Payload) > PayloadMaxSize {
 		return Frame{}, fmt.Errorf("payload too long: %d", len(p.Payload))
 	}
@@ -43,7 +47,7 @@ func SealData(aead cipher.AEAD, p Plaintext) (Frame, error) {
 	binary.BigEndian.PutUint16(unwritten[:InnerHeaderMsgNumSize], p.MsgNum)
 	unwritten = unwritten[InnerHeaderMsgNumSize:]
 
-	unwritten[0], unwritten = p.Index, unwritten[InnerHeaderIndexSize:]
+	unwritten[0], unwritten = p.FragmentIndex, unwritten[InnerHeaderIndexSize:]
 
 	if p.Last {
 		unwritten[0] = 1
@@ -162,7 +166,7 @@ func OpenData(aead cipher.AEAD, f Frame) (Plaintext, error) {
 	payloadLength, plaintextBytes := binary.BigEndian.Uint16(plaintextBytes[:InnerHeaderLenSize]), plaintextBytes[InnerHeaderLenSize:]
 	plaintext.Sender, plaintextBytes = [4]byte(plaintextBytes[:InnerHeaderSenderSize]), plaintextBytes[InnerHeaderSenderSize:]
 	plaintext.MsgNum, plaintextBytes = binary.BigEndian.Uint16(plaintextBytes[:InnerHeaderMsgNumSize]), plaintextBytes[InnerHeaderMsgNumSize:]
-	plaintext.Index, plaintextBytes = plaintextBytes[0], plaintextBytes[InnerHeaderIndexSize:]
+	plaintext.FragmentIndex, plaintextBytes = plaintextBytes[0], plaintextBytes[InnerHeaderIndexSize:]
 	lastByte, plaintextBytes := plaintextBytes[0], plaintextBytes[InnerHeaderLastSize:]
 
 	if lastByte != 0 && lastByte != 1 {

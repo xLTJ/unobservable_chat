@@ -53,11 +53,11 @@ type Frame struct {
 type Plaintext struct {
 	Flag Flag // dummy or message
 	// length gets filled in by SealData dynamically
-	Payload []byte
-	Sender  [4]byte
-	MsgNum  uint16 // message number
-	Index   byte   // fragment index
-	Last    bool   // last fragment of a message
+	Payload       []byte
+	Sender        [4]byte
+	MsgNum        uint16 // message number
+	FragmentIndex byte   // fragment index
+	Last          bool   // last fragment of a message
 }
 
 // --------------------------------------------

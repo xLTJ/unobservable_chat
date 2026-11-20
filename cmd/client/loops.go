@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/cipher"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log"
@@ -73,7 +74,82 @@ func (c *client) handleData(frame chat.Frame) {
 		return
 	}
 
-	fmt.Println(string(plaintext.Payload))
+	reassembledMessage := reassembleMessage(c.messagesInProgress, plaintext)
+	if reassembledMessage == nil {
+		// message is not yet ready, nothing to print
+		return
+	}
+
+	senderName, text, err := chat.ParseBody(reassembledMessage)
+	if err != nil {
+		log.Println("failed to parse body: ", err)
+		return
+	}
+	fmt.Printf("%s: %s\n", senderName, text)
+}
+
+// reassembleMessage reassembles the fragments of a message into a single message.
+// it returns the reassembled message, or nil if the message is incomplete.
+func reassembleMessage(messagesInProgress map[[4]byte]*inProgress, p chat.Plaintext) []byte {
+	currentMessage, ok := messagesInProgress[p.Sender]
+
+	if p.FragmentIndex == 0 {
+		// no message in progress
+		if ok {
+			// if the fragment index is 0, there should be no message in progress. overwrite it and continue
+			log.Println("received a fragment with index 0, but there is a message in progress. Dropping message in progress.")
+		}
+		messagesInProgress[p.Sender] = &inProgress{
+			msgNum:            p.MsgNum,
+			nextFragmentIndex: 0, // gets incremented later
+			body:              make([]byte, 0, chat.MessageMaxLen),
+		}
+		currentMessage = messagesInProgress[p.Sender]
+	} else {
+		// there is a message in progress
+		if !ok {
+			// if the fragment index is not 0, there should be a message in progress. drop the message
+			log.Println("received a fragment with index != 0, but there is no message in progress. Dropping...")
+			return nil
+		}
+		// does the fragment index match the expected one?
+		if currentMessage.nextFragmentIndex != p.FragmentIndex {
+			log.Println("received a fragment with an unexpected index. Dropping...")
+			delete(messagesInProgress, p.Sender)
+			return nil
+		}
+		// does the message number match the expected one?
+		if currentMessage.msgNum != p.MsgNum {
+			log.Println("received a fragment with an unexpected message number. Dropping...")
+			delete(messagesInProgress, p.Sender)
+			return nil
+		}
+	}
+
+	// add the payload to the message body, check if the message is too long
+	currentMessage.body = append(currentMessage.body, p.Payload...)
+	if len(currentMessage.body) > 1+chat.DisplayNameMaxLen+chat.MessageMaxLen {
+		log.Println("received a message that is too long. Dropping...")
+		delete(messagesInProgress, p.Sender)
+		return nil
+	}
+
+	if !p.Last {
+		// if this is not the last fragment, increment the fragment index and return
+		currentMessage.nextFragmentIndex++
+
+		// check if the next fragment would exceed the max
+		if currentMessage.nextFragmentIndex >= chat.FragmentsMax {
+			log.Println("received a message that would have too many fragments. Dropping...")
+			delete(messagesInProgress, p.Sender)
+		}
+
+		return nil
+	}
+
+	// return the finished message and remove the message from the map
+	delete(messagesInProgress, p.Sender)
+	return currentMessage.body
 }
 
 func (c *client) handleHandshake(frame chat.Frame) error {
@@ -163,6 +239,14 @@ func (c *client) send() error {
 	// local aead copy, used to avoid a race condition. aead is only set once anyway, so this is fine
 	var aeadCopy cipher.AEAD
 
+	// set up everything needed across ticks
+	var senderId [4]byte
+	_, _ = rand.Read(senderId[:])
+
+	msgNum := uint16(0)
+	fragmentIndex := 0
+	var payloadPieces [][]byte
+
 	ticker := time.NewTicker(chat.Tick)
 	defer ticker.Stop()
 
@@ -204,16 +288,44 @@ func (c *client) send() error {
 		}
 
 		// if we reach this point, the client is handling normal traffic
-
-		// if a payload is queued, create a message from it, otherwise create a dummy message
 		var plaintext chat.Plaintext
-		select {
-		case payload := <-c.payloadSendChan:
-			plaintext = chat.Plaintext{
-				Flag:    chat.FlagMessage,
-				Payload: payload,
+
+		// if there are no ready pieces, check if there are any new payloads queued
+		if len(payloadPieces) == 0 {
+			select {
+			case payload := <-c.payloadSendChan:
+				// if there is a payload, build a body and split it into pieces
+				body, err := chat.BuildBody(c.name, string(payload))
+				if err != nil {
+					log.Println("error: failed to build body: ", err)
+				}
+				payloadPieces = chat.SplitBody(body)
+			default:
 			}
-		default:
+
+		}
+
+		// if there are ready pieces, ready a message from them
+		if len(payloadPieces) > 0 {
+			plaintext = chat.Plaintext{
+				Flag:          chat.FlagMessage,
+				Payload:       payloadPieces[fragmentIndex],
+				FragmentIndex: byte(fragmentIndex),
+				Sender:        senderId,
+				MsgNum:        msgNum,
+			}
+
+			// if this is the last piece, set the last flag and reset the payloadPieces slice
+			if fragmentIndex == len(payloadPieces)-1 {
+				plaintext.Last = true
+				fragmentIndex = 0
+				payloadPieces = nil
+				msgNum++
+			} else {
+				fragmentIndex++
+			}
+		} else {
+			// if there are no ready pieces, ready a dummy message
 			plaintext.Flag = chat.FlagDummy
 		}
 
@@ -242,8 +354,7 @@ func (c *client) handleInput() error {
 	for scanner.Scan() {
 		payload := []byte(scanner.Text())
 
-		// until fragmentation is implemented, messages cannot exceed the size of one payload
-		if len(payload) > chat.PayloadMaxSize {
+		if len(payload) > chat.MessageMaxLen {
 			log.Println("error: message too long")
 			continue
 		}
