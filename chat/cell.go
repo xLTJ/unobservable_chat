@@ -9,13 +9,21 @@ import (
 
 // size of every part of the cell
 const (
-	KindSize        = 1
-	BodySize        = CellSize - KindSize
-	NonceSize       = chacha20poly1305.NonceSizeX
-	TagSize         = chacha20poly1305.Overhead
-	PlaintextSize   = BodySize - NonceSize - TagSize
-	InnerHeaderSize = 3 // flag + length
-	PayloadMaxSize  = PlaintextSize - InnerHeaderSize
+	KindSize      = 1
+	BodySize      = CellSize - KindSize
+	NonceSize     = chacha20poly1305.NonceSizeX
+	TagSize       = chacha20poly1305.Overhead
+	PlaintextSize = BodySize - NonceSize - TagSize
+
+	InnerHeaderFlagSize   = 1
+	InnerHeaderLenSize    = 2
+	InnerHeaderSenderSize = 4
+	InnerHeaderMsgNumSize = 2
+	InnerHeaderIndexSize  = 1
+	InnerHeaderLastSize   = 1
+	InnerHeaderSize       = InnerHeaderFlagSize + InnerHeaderLenSize + InnerHeaderSenderSize + InnerHeaderMsgNumSize + InnerHeaderIndexSize + InnerHeaderLastSize
+
+	PayloadMaxSize = PlaintextSize - InnerHeaderSize
 )
 
 type Cell [CellSize]byte
@@ -43,8 +51,13 @@ type Frame struct {
 }
 
 type Plaintext struct {
-	Flag    Flag
+	Flag Flag // dummy or message
+	// length gets filled in by SealData dynamically
 	Payload []byte
+	Sender  [4]byte
+	MsgNum  uint16 // message number
+	Index   byte   // fragment index
+	Last    bool   // last fragment of a message
 }
 
 // --------------------------------------------

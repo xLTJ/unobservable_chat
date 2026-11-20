@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"unicode/utf8"
 
 	"filippo.io/cpace"
 	"github.com/xLTJ/unobservable_chat/chat"
@@ -64,6 +65,14 @@ func run() error {
 	roomName, err := chat.NormaliseRoomName(*room)
 	if err != nil {
 		return fmt.Errorf("failed to normalise room name: %v", err)
+	}
+
+	// check if the display name is valid
+	if len(*name) > chat.DisplayNameMaxLen || len(*name) == 0 {
+		return fmt.Errorf("invalid display name size: %q", *name)
+	}
+	if !utf8.ValidString(*name) {
+		return fmt.Errorf("invalid display name: %q", *name)
 	}
 
 	var connection net.Conn

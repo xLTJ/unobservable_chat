@@ -11,6 +11,12 @@ const (
 	// 8 is chosen so that for a max of 7 other users, there is always one spare slot for a backlog to be drained
 	RelayDownstreamCellAmount = RoomCap
 
+	// MessageMaxLen is the maximum length of a message
+	MessageMaxLen = 4096
+
+	// DisplayNameMaxLen is the maximum length of a display name
+	DisplayNameMaxLen = 32
+
 	// CellSize is the total fixed length of a cell.
 	// 478 is chosen due to being largest app cell that is always one Tor relay cell, following tests
 	CellSize = 478

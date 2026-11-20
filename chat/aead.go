@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 )
 
 func MakeFillerFrame() Frame {
@@ -14,17 +15,43 @@ func MakeFillerFrame() Frame {
 	return f
 }
 
+// SealData encrypts plaintext into a data frame
 func SealData(aead cipher.AEAD, p Plaintext) (Frame, error) {
 	if len(p.Payload) > PayloadMaxSize {
-		return Frame{}, fmt.Errorf("payload too long: %d > %d", len(p.Payload), PayloadMaxSize)
+		return Frame{}, fmt.Errorf("payload too long: %d", len(p.Payload))
+	}
+
+	if p.Flag == FlagMessage && len(p.Payload) == 0 {
+		return Frame{}, fmt.Errorf("payload too short: %d", len(p.Payload))
+	}
+	if p.Flag == FlagDummy && len(p.Payload) != 0 {
+		return Frame{}, fmt.Errorf("dummy payload has %d bytes, want 0", len(p.Payload))
 	}
 
 	var plaintextArray [PlaintextSize]byte
+	unwritten := plaintextArray[:] // pointer to the next unwritten byte in plaintextArray
 
 	// construct plaintext
-	plaintextArray[0] = byte(p.Flag)
-	binary.BigEndian.PutUint16(plaintextArray[1:], uint16(len(p.Payload))) // put len at bytes 1-2
-	copy(plaintextArray[3:], p.Payload)
+	unwritten[0], unwritten = byte(p.Flag), unwritten[InnerHeaderFlagSize:]
+
+	binary.BigEndian.PutUint16(unwritten[:InnerHeaderLenSize], uint16(len(p.Payload)))
+	unwritten = unwritten[InnerHeaderLenSize:]
+
+	copy(unwritten, p.Sender[:])
+	unwritten = unwritten[InnerHeaderSenderSize:]
+
+	binary.BigEndian.PutUint16(unwritten[:InnerHeaderMsgNumSize], p.MsgNum)
+	unwritten = unwritten[InnerHeaderMsgNumSize:]
+
+	unwritten[0], unwritten = p.Index, unwritten[InnerHeaderIndexSize:]
+
+	if p.Last {
+		unwritten[0] = 1
+	} else {
+		unwritten[0] = 0
+	}
+	unwritten = unwritten[InnerHeaderLastSize:]
+	copy(unwritten, p.Payload)
 
 	// generate nonce
 	nonce := make([]byte, NonceSize)
@@ -45,8 +72,75 @@ func SealData(aead cipher.AEAD, p Plaintext) (Frame, error) {
 	}, nil
 }
 
+func BuildBody(name, text string) ([]byte, error) {
+	// reject all bad and evil inputs
+	if len(name) == 0 || len(text) == 0 {
+		return nil, fmt.Errorf("name or text is empty")
+	}
+
+	if len(name) > DisplayNameMaxLen || len(text) > MessageMaxLen {
+		return nil, fmt.Errorf("name or text too long")
+	}
+
+	if !utf8.ValidString(name) {
+		return nil, fmt.Errorf("invalid name")
+	}
+
+	// finally, we can actually build the body
+	var body []byte
+	body = append(body, byte(len(name)))
+	body = append(body, name...)
+	body = append(body, text...)
+	return body, nil
+}
+
+func ParseBody(body []byte) (name, text string, err error) {
+	// body completely empty? death
+	if len(body) == 0 {
+		return "", "", fmt.Errorf("body is empty")
+	}
+
+	// invalid name length? death
+	nameLen := int(body[0])
+	if nameLen == 0 || nameLen > DisplayNameMaxLen || nameLen > len(body)-1 {
+		return "", "", fmt.Errorf("invalid name length: %d", nameLen)
+	}
+
+	// extract name and text
+	name = string(body[1 : 1+nameLen])
+	text = string(body[1+nameLen:])
+
+	// invalid name? death
+	if !utf8.ValidString(name) {
+		return "", "", fmt.Errorf("invalid name: %q", name)
+	}
+
+	// invalid text? believe it or not, death
+	if len(text) > MessageMaxLen || len(text) == 0 {
+		return "", "", fmt.Errorf("invalid text length: %d", len(text))
+	}
+
+	return
+}
+
+// SplitBody splits a body into a slice of pieces of PayloadMaxSize length
+func SplitBody(body []byte) [][]byte {
+	var pieces [][]byte
+	for i := 0; i < len(body); i += PayloadMaxSize {
+		// if the remainder is less than PayloadMaxSize, append it as a smaller piece and break the loop
+		if i+PayloadMaxSize > len(body) {
+			pieces = append(pieces, body[i:])
+			break
+		}
+		pieces = append(pieces, body[i:i+PayloadMaxSize])
+	}
+
+	return pieces
+}
+
 var ErrOpen = errors.New("cell failed to open") // sentinel error when opening fails
 
+// OpenData decrypts a data frame
 func OpenData(aead cipher.AEAD, f Frame) (Plaintext, error) {
 	if f.Kind != KindData {
 		return Plaintext{}, fmt.Errorf("frame has kind %d, want %d", f.Kind, KindData)
@@ -55,26 +149,42 @@ func OpenData(aead cipher.AEAD, f Frame) (Plaintext, error) {
 	// opening
 	nonce := f.Body[:NonceSize]
 	ad := []byte{byte(KindData)}
-	plaintext, err := aead.Open(nil, nonce, f.Body[NonceSize:], ad)
+	plaintextBytes, err := aead.Open(nil, nonce, f.Body[NonceSize:], ad)
 	if err != nil {
 		return Plaintext{}, ErrOpen
 	}
 
 	// parse flag and length
-	flag := Flag(plaintext[0])
-	length := binary.BigEndian.Uint16(plaintext[1:])
+	var plaintext Plaintext
+
+	// the parser of doom and despair
+	plaintext.Flag, plaintextBytes = Flag(plaintextBytes[0]), plaintextBytes[InnerHeaderFlagSize:]
+	payloadLength, plaintextBytes := binary.BigEndian.Uint16(plaintextBytes[:InnerHeaderLenSize]), plaintextBytes[InnerHeaderLenSize:]
+	plaintext.Sender, plaintextBytes = [4]byte(plaintextBytes[:InnerHeaderSenderSize]), plaintextBytes[InnerHeaderSenderSize:]
+	plaintext.MsgNum, plaintextBytes = binary.BigEndian.Uint16(plaintextBytes[:InnerHeaderMsgNumSize]), plaintextBytes[InnerHeaderMsgNumSize:]
+	plaintext.Index, plaintextBytes = plaintextBytes[0], plaintextBytes[InnerHeaderIndexSize:]
+	lastByte, plaintextBytes := plaintextBytes[0], plaintextBytes[InnerHeaderLastSize:]
+
+	if lastByte != 0 && lastByte != 1 {
+		return Plaintext{}, fmt.Errorf("invalid last byte: %d", lastByte)
+	}
+	plaintext.Last = lastByte == 1
 
 	// check validity
-	if flag != FlagDummy && flag != FlagMessage {
-		return Plaintext{}, fmt.Errorf("invalid flag: %d", flag)
+	if plaintext.Flag != FlagDummy && plaintext.Flag != FlagMessage {
+		return Plaintext{}, fmt.Errorf("invalid flag: %d", plaintext.Flag)
 	}
-	if length > PayloadMaxSize {
-		return Plaintext{}, fmt.Errorf("invalid length: %d", length)
+	if payloadLength > PayloadMaxSize {
+		return Plaintext{}, fmt.Errorf("payload too long: %d", payloadLength)
 	}
-	payload := plaintext[InnerHeaderSize : InnerHeaderSize+length]
+	if plaintext.Flag == FlagMessage && payloadLength == 0 {
+		return Plaintext{}, fmt.Errorf("payload too short: %d", payloadLength)
+	}
+	if plaintext.Flag == FlagDummy && payloadLength != 0 {
+		return Plaintext{}, fmt.Errorf("dummy payload has %d bytes, want 0", payloadLength)
+	}
 
-	return Plaintext{
-		Flag:    flag,
-		Payload: payload,
-	}, nil
+	plaintext.Payload = plaintextBytes[:payloadLength]
+
+	return plaintext, nil
 }
