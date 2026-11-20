@@ -86,6 +86,10 @@ func BuildBody(name, text string) ([]byte, error) {
 		return nil, fmt.Errorf("name or text too long")
 	}
 
+	if !utf8.ValidString(text) {
+		return nil, fmt.Errorf("invalid text")
+	}
+
 	if !utf8.ValidString(name) {
 		return nil, fmt.Errorf("invalid name")
 	}
@@ -123,7 +127,10 @@ func ParseBody(body []byte) (name, text string, err error) {
 	if len(text) > MessageMaxLen || len(text) == 0 {
 		return "", "", fmt.Errorf("invalid text length: %d", len(text))
 	}
-
+	if !utf8.ValidString(text) {
+		return "", "", fmt.Errorf("invalid text")
+	}
+	
 	return
 }
 

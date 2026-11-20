@@ -316,6 +316,8 @@ func TestBuildBodyRejects(t *testing.T) {
 		"name not UTF-8":          {"\xff", "hello"},
 		"empty text":              {"alice", ""},
 		"text over 4096 bytes":    {"alice", strings.Repeat("t", MessageMaxLen+1)},
+		"text not UTF-8":          {"alice", "\xff"},
+		"text cut mid-character":  {"alice", "abc\xc3"}, // what a terminal leaves when it cuts an "ø" in half (SPEC §7.1)
 	}
 	for what, c := range cases {
 		if _, err := BuildBody(c.name, c.text); err == nil {
@@ -334,6 +336,7 @@ func TestParseBodyRejects(t *testing.T) {
 		"name not UTF-8":        {1, 0xff, 'h', 'i'},
 		"no text":               append([]byte{5}, "alice"...),
 		"text over 4096 bytes":  append([]byte{5}, "alice"+strings.Repeat("t", MessageMaxLen+1)...),
+		"text not UTF-8":        append([]byte{5}, "alice\xff"...),
 	}
 	for what, body := range cases {
 		if _, _, err := ParseBody(body); err == nil {
