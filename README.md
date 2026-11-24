@@ -16,6 +16,8 @@ At the moment, every instruction here assumes everything runs locally in the sam
 - `chat/cell.go` - the fixed-size cell, has definitions and methods for encoding and decoding
 - `cmd/relay` - the relay. Forwards every cell it receives to every other connected client.
 - `cmd/client` - a test client. Sends one test cell per tick and prints the cells it receives.
+- `cmd/naive` - naive variant of the client, used for evaluation only, based on a copy of `cmd/client` from commit `1f6ad76`
+
 
 ## Build and run
 
