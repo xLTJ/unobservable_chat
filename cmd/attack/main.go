@@ -64,7 +64,7 @@ func analyzeCapture() {
 			continue
 		}
 		targetFrame = frame
-		fmt.Printf("Found target frame")
+		fmt.Println("Found target frame")
 		break
 	}
 
@@ -82,6 +82,11 @@ func analyzeCapture() {
 	if err != nil {
 		panic("error resetting capture file: " + err.Error())
 	}
+
+	messageNum := 0
+	dummyNum := 0
+
+	fmt.Println("----------- Decrypted messages -----------")
 	for {
 		cell, err := chat.ReadCell(captureFile)
 		if errors.Is(err, io.EOF) {
@@ -100,14 +105,22 @@ func analyzeCapture() {
 			panic(err)
 		}
 		if plaintext.Flag == chat.FlagDummy {
+			dummyNum++
 			continue
 		}
 		name, text, err := chat.ParseBody(plaintext.Payload)
 		if err != nil {
 			panic(err)
 		}
+
 		fmt.Printf("%s: %s\n", name, text)
+		messageNum++
 	}
+
+	fmt.Println("----------- Stats -----------")
+	fmt.Printf("Messages: %d\n", messageNum)
+	fmt.Printf("Dummy messages: %d\n", dummyNum)
+	fmt.Printf("Total cells: %d\n", messageNum+dummyNum)
 }
 
 func findPassword(frame chat.Frame) (string, cipher.AEAD, error) {
