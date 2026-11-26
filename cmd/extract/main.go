@@ -6,11 +6,15 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/xLTJ/unobservable_chat/chat"
 )
 
 const (
@@ -28,6 +32,13 @@ type segment struct {
 	payload         int // tcp.len
 }
 
+// a window is defined as [start, end)
+type window struct {
+	start, end int64
+}
+
+var windowLength = flag.Duration("window", 10*time.Second, "length of one window")
+
 func main() {
 	flag.Parse()
 
@@ -41,8 +52,19 @@ func run(runDirectories []string) error {
 		return fmt.Errorf("usage: extract [-window 10s] <run-dir>...")
 	}
 
+	if *windowLength <= 0 {
+		return fmt.Errorf("window length must be positive")
+	}
+
 	csvWriter := csv.NewWriter(os.Stdout)
-	// header once, here
+	// write the header
+	if err := csvWriter.Write([]string{
+		"session", "build", "seed", "link", "window", "start_micros", "label", "segments", "bytes", "gap_std",
+		"gap_max",
+	}); err != nil {
+		return fmt.Errorf("failed to write header: %v", err)
+	}
+
 	for _, runDirectory := range runDirectories {
 		if err := extractRun(runDirectory, csvWriter); err != nil {
 			return fmt.Errorf("%s: %v", runDirectory, err)
@@ -54,6 +76,7 @@ func run(runDirectories []string) error {
 
 func extractRun(runDirectory string, csvWriter *csv.Writer) error {
 	runName := filepath.Base(runDirectory)
+	windowMicros := windowLength.Microseconds()
 
 	// parse all the files
 	segments, err := parseCaptureFile(filepath.Join(runDirectory, captureFileName))
@@ -73,6 +96,71 @@ func extractRun(runDirectory string, csvWriter *csv.Writer) error {
 		return fmt.Errorf("failed to read listener timings log: %v", err)
 	}
 	seed, build, err := parseRunInfo(filepath.Join(runDirectory, runInfoFileName))
+	if err != nil {
+		return fmt.Errorf("failed to read run info: %v", err)
+	}
+
+	// get the connection ports
+	listenerPort, talkerPort, err := findConnections(segments, listenerHelloTime, talkerHelloTime)
+	if err != nil {
+		return fmt.Errorf("failed to find connections: %v", err)
+	}
+
+	// build the two links
+	talkerUpLink := linkSegments(segments, talkerPort, chat.DefaultPort)
+	listenerDownLink := linkSegments(segments, chat.DefaultPort, listenerPort)
+
+	type link struct {
+		name         string
+		segments     []segment
+		messageTimes []int64
+	}
+
+	links := []link{
+		{"talker-up", talkerUpLink, talkerMessageTimes},
+		{"listener-down", listenerDownLink, listenerMessageTimes},
+	}
+
+	// go over each link
+	for _, l := range links {
+		// loop through the windows and write the data
+		for i := 0; runStart+int64(i+1)*windowMicros <= runEnd; i++ {
+			win := window{
+				start: runStart + int64(i)*windowMicros,
+				end:   runStart + int64(i+1)*windowMicros,
+			}
+
+			// get the label (active: 1 vs idle: 0)
+			label := "0"
+			if hasMessage(l.messageTimes, win) {
+				label = "1"
+			}
+
+			// extract the features
+			segmentCount, byteCount, gapStd, gapMax := windowFeatures(l.segments, win)
+
+			// create the row
+			row := []string{
+				runName,
+				build,
+				strconv.FormatUint(seed, 10),
+				l.name,
+				strconv.Itoa(i),
+				strconv.FormatInt(win.start, 10),
+				label,
+				strconv.Itoa(segmentCount),
+				strconv.Itoa(byteCount),
+				strconv.FormatFloat(gapStd, 'f', 6, 64),
+				strconv.FormatFloat(gapMax, 'f', 6, 64),
+			}
+
+			// and finally write it
+			err := csvWriter.Write(row)
+			if err != nil {
+				return fmt.Errorf("failed to write row: %v", err)
+			}
+		}
+	}
 
 	return nil
 }
@@ -151,7 +239,7 @@ func parsePhasesLog(filePath string) (runStart, runEnd int64, err error) {
 		}
 		eventType := fields[1]
 
-		// find the start and end of the grid
+		// find the start and end of the run
 		if runStart == 0 && eventType == "phase" {
 			runStart = timestamp
 			continue
@@ -226,6 +314,9 @@ func parseTimingsLog(filePath, direction string) (messageTimes []int64, helloTim
 	if err := scanner.Err(); err != nil {
 		return nil, 0, fmt.Errorf("failed to read timings log: %v", err)
 	}
+	if helloTime == 0 {
+		return nil, 0, fmt.Errorf("hello time not found in timings log")
+	}
 	return messageTimes, helloTime, nil
 }
 
@@ -248,19 +339,126 @@ func parseRunInfo(filePath string) (seed uint64, build string, err error) {
 			continue
 		}
 
-		if strings.HasPrefix(line, "build: ") {
-			build = strings.TrimPrefix(line, "build: ")
-			continue
+		if strings.Contains(line, "-tags=nocover") {
+			build = "nocover"
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		return 0, "", fmt.Errorf("failed to read run info: %v", err)
 	}
-	if seed == 0 || build == "" {
-		return 0, "", fmt.Errorf("seed and/or build not found in run info")
+	if seed == 0 {
+		return 0, "", fmt.Errorf("seed not found in run info")
+	}
+	if build == "" {
+		build = "cover"
 	}
 	return seed, build, nil
+}
+
+// findConnections returns the listener and talker client ports
+// errors if there isnt exactly two different ports,
+// or if either one's first segment is more than 1 ms from that client's hello time
+func findConnections(segments []segment, listenerHello, talkerHello int64) (listenerPort, talkerPort string, err error) {
+	limit := time.Millisecond.Microseconds()
+
+	for _, s := range segments {
+		if s.destinationPort == chat.DefaultPort {
+			// first source port is the listen port, second is the talker port
+			if listenerPort == "" {
+				offset := s.captureTime - listenerHello
+				if max(offset, -offset) > limit {
+					return "", "",
+						fmt.Errorf("first segment of listener client is more than 1 ms after listener client hello")
+				}
+
+				listenerPort = s.sourcePort
+				continue
+			}
+			if talkerPort == "" && s.sourcePort != listenerPort {
+				offset := s.captureTime - talkerHello
+				if max(offset, -offset) > limit {
+					return "", "",
+						fmt.Errorf("first segment of talker client is more than 1 ms after talker client hello")
+				}
+
+				talkerPort = s.sourcePort
+				continue
+			}
+			// more than two different ports should not happen
+			if s.sourcePort != listenerPort && s.sourcePort != talkerPort {
+				return "", "", fmt.Errorf("unexpected source port: %q", s.sourcePort)
+			}
+		}
+	}
+
+	if listenerPort == "" || talkerPort == "" {
+		return "", "", fmt.Errorf("listener and/or talker port not found")
+	}
+	return listenerPort, talkerPort, nil
+}
+
+// linkSegments returns the segments from sourcePort to destinationPort, in capture order
+func linkSegments(segments []segment, sourcePort, destinationPort string) (linkedSegments []segment) {
+	for _, s := range segments {
+		if s.sourcePort == sourcePort && s.destinationPort == destinationPort {
+			linkedSegments = append(linkedSegments, s)
+		}
+	}
+	return
+}
+
+// hasMessage returns whether any of messageTimes lies in the window
+func hasMessage(messageTimes []int64, win window) bool {
+	for _, t := range messageTimes {
+		if win.start <= t && t < win.end {
+			return true
+		}
+	}
+	return false
+}
+
+// windowFeatures computes the four features from one link's segments in the window
+func windowFeatures(
+	linkSegments []segment, win window,
+) (
+	segmentCount, byteCount int, gapStandardDeviation, gapMax float64,
+) {
+	var windowArrivals []int64
+
+	for _, s := range linkSegments {
+		// we are only interested in segments that are in the window
+		if win.start <= s.captureTime && s.captureTime < win.end {
+			segmentCount++
+			byteCount += s.payload
+			windowArrivals = append(windowArrivals, s.captureTime)
+		}
+	}
+
+	eventTimeStamps := append([]int64{win.start}, windowArrivals...)
+	eventTimeStamps = append(eventTimeStamps, win.end)
+	gapSeconds := make([]float64, 0, len(eventTimeStamps)-1)
+
+	gapSum := float64(0)
+	for i := 1; i < len(eventTimeStamps); i++ {
+		gap := time.Duration(eventTimeStamps[i]-eventTimeStamps[i-1]) * time.Microsecond
+		gapSec := gap.Seconds()
+
+		gapSeconds = append(gapSeconds, gapSec)
+		gapSum += gapSec
+		if gapSec > gapMax {
+			gapMax = gapSec
+		}
+	}
+
+	// compute the standard deviation of the gaps (shoutout probability and statistics class)
+	mean := gapSum / float64(len(gapSeconds))
+	squareSum := float64(0)
+	for _, gap := range gapSeconds {
+		squareSum += (gap - mean) * (gap - mean)
+	}
+	gapStandardDeviation = math.Sqrt(squareSum / float64(len(gapSeconds)))
+	return
 }
 
 // parseEpochMicros turns tshark's frame.time_epoch, e.g. "1795652736.682746658",
