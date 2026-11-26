@@ -25,7 +25,7 @@ var seed = flag.Uint64("seed", 1, "PRNG seed")
 func main() {
 	flag.Parse()
 
-	// run client, log any exit errors
+	// run traffic generator, log any exit errors
 	err := run()
 	if err != nil {
 		log.Fatal(err)
