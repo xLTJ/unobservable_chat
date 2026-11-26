@@ -340,16 +340,23 @@ func sendCells(u *user, r *relay) {
 			}
 		}
 
-		// if the batch is not full, fill out the rest with filler cells
-		for len(sendBatch) < chat.RelayDownstreamCellAmount {
-			fillerFrame := chat.MakeFillerFrame()
-			fillerCell, err := fillerFrame.Encode()
-			if err != nil {
-				log.Println("Error: failed to encode filler frame: ", err)
-				r.removeUser <- u
-				return
+		// if the batch is not full, fill out the rest with filler cells (assuming cover mode)
+		if chat.Cover {
+			for len(sendBatch) < chat.RelayDownstreamCellAmount {
+				fillerFrame := chat.MakeFillerFrame()
+				fillerCell, err := fillerFrame.Encode()
+				if err != nil {
+					log.Println("Error: failed to encode filler frame: ", err)
+					r.removeUser <- u
+					return
+				}
+				sendBatch = append(sendBatch, fillerCell[:])
 			}
-			sendBatch = append(sendBatch, fillerCell[:])
+		}
+
+		// if the batch is empty, dont send anything (this only happens in nocover mode)
+		if len(sendBatch) == 0 {
+			continue
 		}
 
 		// send the batch.

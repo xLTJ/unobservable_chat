@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 	"unicode/utf8"
 
 	"filippo.io/cpace"
@@ -31,6 +32,8 @@ type client struct {
 	keyReadyChan     chan cipher.AEAD // channel to pass the key to the send goroutine, avoiding a race condition
 
 	messagesInProgress map[[4]byte]*inProgress // messages in progress, keyed by sender id
+
+	timingLog *log.Logger // timing logger
 }
 
 // inProgress is used to keep track of fragmented messages that are being received
@@ -47,6 +50,7 @@ var name = flag.String("name", "Anonymous", "name to display")
 var room = flag.String("room", "", "name of room to join")
 var relayHost = flag.String("relay", "127.0.0.1", "host of relay")
 var socksAddress = flag.String("socks", "", "address of socks proxy, empty for direct") // check params for which to use
+var timingLogPath = flag.String("timing", "", "path to timing log. logs are off when empty")
 
 func main() {
 	// do whatever here idk
@@ -82,6 +86,18 @@ func run() error {
 	}
 	if !utf8.ValidString(*name) {
 		return fmt.Errorf("invalid display name: %q", *name)
+	}
+
+	// set up timing log
+	var timingLog *log.Logger
+	if *timingLogPath != "" {
+		// open timing log. write-only, create if it doesn't exist, truncate (overwrite) if it does
+		timingLogFile, err := os.OpenFile(*timingLogPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+		if err != nil {
+			return fmt.Errorf("failed to open timing log: %v", err)
+		}
+		defer func() { _ = timingLogFile.Close() }()
+		timingLog = log.New(timingLogFile, "", 0)
 	}
 
 	var connection net.Conn
@@ -121,6 +137,7 @@ func run() error {
 		handshakeOutChan:   make(chan chat.Frame, chat.RoomCap-1),
 		keyReadyChan:       make(chan cipher.AEAD, 1),
 		messagesInProgress: make(map[[4]byte]*inProgress),
+		timingLog:          timingLog,
 	}
 
 	// before continuing anything else, do onboarding
@@ -141,4 +158,24 @@ func run() error {
 		errChan <- client.handleInput()
 	}()
 	return <-errChan
+}
+
+// logCell writes a timing-log line. does nothing when -timing flag is off.
+func (c *client) logCell(timeStamp time.Time, direction, event string) {
+	if c.timingLog == nil {
+		return
+	}
+	c.timingLog.Printf("%d %s %s", timeStamp.UnixMicro(), direction, event)
+}
+
+// dataEvent names a data cell for the timing log, from its plaintext.
+func dataEvent(plaintext chat.Plaintext) string {
+	switch {
+	case plaintext.Flag == chat.FlagDummy:
+		return "dummy"
+	case plaintext.Last:
+		return "msg"
+	default:
+		return "frag"
+	}
 }

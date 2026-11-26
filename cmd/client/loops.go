@@ -25,67 +25,74 @@ func (c *client) receive() error {
 		if err != nil {
 			return fmt.Errorf("failed to read from server: %v", err)
 		}
+		logReadAt := time.Now()
 
 		// decode frame
 		frame, err := chat.Decode(cell)
 		if err != nil {
 			// just drop invalid frames and continue
-			// log.Println("Failed to decode cell: ", err) // debug
+			c.logCell(logReadAt, "down", "invalid")
 			continue
 		}
 
 		switch frame.Kind {
 		case chat.KindData:
-			c.handleData(frame)
+			c.logCell(logReadAt, "down", c.handleData(frame))
 
 		case chat.KindHandshake:
+			c.logCell(logReadAt, "down", "handshake")
 			if err := c.handleHandshake(frame); err != nil {
 				return fmt.Errorf("failed to handle handshake: %v", err)
 			}
 		case chat.KindRelayControl:
 			// the client should never recieve a relay control frame from the relay after the first one, this is a bug
+			c.logCell(logReadAt, "down", "control")
 			log.Println("unexpected relay control frame, this should never happen")
 			continue
 		default:
+			c.logCell(logReadAt, "down", "invalid")
 			log.Println("unexpected frame kind: ", frame.Kind)
 			continue
 		}
 	}
 }
 
-func (c *client) handleData(frame chat.Frame) {
+// handleData handles data frames. it returns the event that was triggered by the frame if needed for the timinglog
+func (c *client) handleData(frame chat.Frame) string {
 	// no aead means that the client has not yet joined a room, ignore data frames
 	if c.aead == nil {
-		return
+		return "nokey"
 	}
 
 	// open data to access plaintext
 	plaintext, err := chat.OpenData(c.aead, frame)
 	if errors.Is(err, chat.ErrOpen) {
-		return // ErrOpen drops silently if the frame is tampered with
+		return "noopen" // ErrOpen drops silently if the frame is tampered with
 	}
 	if err != nil {
 		log.Println("failed to open frame: ", err)
-		return
+		return "invalid"
 	}
 
 	// ignore dummies
 	if plaintext.Flag == chat.FlagDummy {
-		return
+		return dataEvent(plaintext)
 	}
 
 	reassembledMessage := reassembleMessage(c.messagesInProgress, plaintext)
 	if reassembledMessage == nil {
 		// message is not yet ready, nothing to print
-		return
+		return dataEvent(plaintext)
 	}
 
 	senderName, text, err := chat.ParseBody(reassembledMessage)
 	if err != nil {
 		log.Println("failed to parse body: ", err)
-		return
+		return dataEvent(plaintext)
 	}
 	fmt.Printf("%s: %s\n", senderName, text)
+
+	return dataEvent(plaintext)
 }
 
 // reassembleMessage reassembles the fragments of a message into a single message.
@@ -269,12 +276,17 @@ func (c *client) send() error {
 			if err != nil {
 				return fmt.Errorf("failed to write handshake frame to server: %v", err)
 			}
+			c.logCell(time.Now(), "up", "handshake")
 			continue
 		default:
 		}
 
 		// if no key is set yet, send filler frame for this tick
 		if aeadCopy == nil {
+			if !chat.Cover {
+				continue
+			}
+
 			fillerFrame := chat.MakeFillerFrame()
 			fillerCell, err := fillerFrame.Encode()
 			if err != nil {
@@ -284,6 +296,7 @@ func (c *client) send() error {
 			if err != nil {
 				return fmt.Errorf("failed to write filler frame to server: %v", err)
 			}
+			c.logCell(time.Now(), "up", "filler")
 			continue
 		}
 
@@ -325,6 +338,9 @@ func (c *client) send() error {
 				fragmentIndex++
 			}
 		} else {
+			if !chat.Cover {
+				continue
+			}
 			// if there are no ready pieces, ready a dummy message
 			plaintext.Flag = chat.FlagDummy
 		}
@@ -344,6 +360,7 @@ func (c *client) send() error {
 		if err != nil {
 			return fmt.Errorf("failed to write to server: %v", err)
 		}
+		c.logCell(time.Now(), "up", dataEvent(plaintext))
 	}
 
 	return nil

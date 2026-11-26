@@ -28,6 +28,7 @@ func (c *client) handleOnboarding() error {
 	if err != nil {
 		return fmt.Errorf("failed to write hello frame to server: %v", err)
 	}
+	c.logCell(time.Now(), "up", "hello")
 	log.Println("sent hello frame")
 	log.Println("waiting for onboard cell...")
 
@@ -36,6 +37,7 @@ func (c *client) handleOnboarding() error {
 	if err != nil {
 		return fmt.Errorf("failed to read from server: %v", err)
 	}
+	logReadAt := time.Now()
 	frame, err := chat.Decode(cell)
 	if err != nil {
 		return fmt.Errorf("failed to decode onboard frame: %v", err)
@@ -45,6 +47,7 @@ func (c *client) handleOnboarding() error {
 	if frame.Kind != chat.KindRelayControl {
 		return fmt.Errorf("expected first cell to be a control cell, got %d", frame.Kind)
 	}
+	c.logCell(logReadAt, "down", "control")
 	log.Println("received relay control")
 
 	// parse control frame to get earlier
@@ -95,7 +98,7 @@ func (c *client) handleOnboarding() error {
 		c.handshakeOutChan <- msgAFrame
 
 		// set a deadline for the joiner to wait for the reply
-		err = c.conn.SetReadDeadline(time.Now().Add(chat.Tick * chat.JoinTimeout))
+		err = c.conn.SetReadDeadline(time.Now().Add(chat.JoinTimeout))
 		if err != nil {
 			return fmt.Errorf("failed to set deadline: %v", err)
 		}
