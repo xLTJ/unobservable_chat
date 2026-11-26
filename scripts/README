@@ -1,0 +1,24 @@
+# This directory contains scripts for running experiments
+
+## exp2-run.sh: one scripted run for experiment 2, on localhost.
+
+Starts a capture on the loopback interface, the relay, a silent listener and a talker whose input comes from the
+traffic generator. When the generator is done, it waits a few seconds for the last cells and stops everything. It only
+automates what would otherwise be typed by hand every time.
+
+Usage: scripts/exp2-run.sh <bin-dir> <seed> <out-dir> [generator flags...]
+   bin-dir   bin/ for the normal build, bin/nocover/ for the no-cover build
+   seed      the generator's -seed
+   out-dir   created by the script; must not exist yet. Keep it outside the
+             repository: captures are never committed.
+   generator flags, e.g. -duration 2m, are passed on to the generator.
+
+Leaves in out-dir:
+   capture.pcapng                  everything on port 9735
+   talker.timing, listener.timing  the clients' timing logs (-timing)
+   phases.log                      the generator's phase log (the labels)
+   listener.out                    the lines the listener printed
+   *.err                           each program's stderr
+   run.info                        arguments, times and the binaries' build info
+
+Needs dumpcap with capture rights for the current user (e.g. membership of the wireshark group), and the port free.
